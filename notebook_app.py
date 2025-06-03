@@ -2108,7 +2108,7 @@ with ui.dialog() as connection_dialog:
         db_port = ui.input('Database Port', value=saved_creds.get('db_port', '5439'), placeholder='')
         db_name = ui.input('Database Name', value=saved_creds.get('db_name', ''), placeholder='')
         db_user = ui.input('Database User', value=saved_creds.get('db_user', ''), placeholder='')
-        db_password = ui.input('Database Password', placeholder='your_db_password').props('type=password')
+        db_password = ui.input('Database Password', placeholder='').props('type=password')
         ui.separator().classes('my-4')
         with ui.expansion('SSH Configuration (Optional)', icon='vpn_key').classes('w-full'):
             ui.label('Configure SSH tunnel for secure database connections').classes('text-sm text-white-500 mb-2')
