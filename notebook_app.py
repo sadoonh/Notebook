@@ -115,6 +115,7 @@ body {
     align-items: center;
     background-color: var(--bg-tertiary); /* Header background */
     border-bottom: 1px solid #fff8e6; /* Separator line */
+    padding: 8px 12px; /* Added padding to header */
 }
 
 .code-cell.collapsed .code-cell-header {
@@ -687,9 +688,11 @@ body {
     background-color: var(--bg-output) !important;
 }
 
-.dark-mode .q-tree .q-tree__node-header:hover .q-tree__node-header-content > div,
-.dark-mode .q-tree .q-tree__node-header:hover .q-tree__arrow,
-
+.dark-mode .q-tree .q-tree__node-header:hover .dnb-file-node .q-icon,
+.dark-mode .q-tree .q-tree__node-header:hover .dnb-file-node .q-tree__node-header-content > div,
+.dark-mode .q-tree .q-tree__node-header:hover .q-tree__arrow {
+    color: #ff8c00 !important; /* Darker orange on hover */
+}
 
 .q-drawer .nicegui-column {
     height: 100%;
@@ -1035,6 +1038,7 @@ class NotebookApp:
         self.current_filename = None
         self.is_modified = False
         self.last_tree_state: Optional[List[Tuple[str, bool, float]]] = None 
+        # REMOVED: self.show_all_rows_for_df is now per-cell
 
     def generate_cell_id(self):
         return str(uuid.uuid4())[:8]
@@ -1180,7 +1184,8 @@ class NotebookApp:
                 'type': cell_data['type'].value,
                 'code': cell_data['code'].value,
                 'df_name': cell_data['df_name'].value,
-                'is_collapsed': cell_data['is_collapsed']()
+                'is_collapsed': cell_data['is_collapsed'](),
+                'show_all_rows': cell_data['show_all_rows'] # NEW: Save per-cell switch state
             }
             notebook_data['cells'].append(cell_info)
         
@@ -1230,12 +1235,14 @@ class NotebookApp:
                 target_dark_mode = notebook.is_dark_mode # Current UI mode
                 if target_dark_mode != notebook_data['is_dark_mode']: # Desired mode
                     toggle_dark_mode() # Call function to change UI and app state
-            
+
             if 'connection_config' in notebook_data and notebook_data['connection_config']:
                 self.last_successful_config = notebook_data['connection_config'].copy()
             
             for cell_info in notebook_data['cells']:
-                await add_cell(cell_info['type'].lower())
+                # Pass the 'show_all_rows' state from the loaded data
+                # Default to False if the key is missing (for older notebook files)
+                await add_cell(cell_info['type'].lower(), initial_show_all_rows=cell_info.get('show_all_rows', False))
                 
                 if self.cells:
                     cell_data = self.cells[-1]
@@ -1270,18 +1277,14 @@ class NotebookApp:
         self.mark_saved()
         await add_cell('sql')
 
-    async def execute_python(self, code: str) -> Tuple[bool, str, str]:
+    async def execute_python(self, code: str, show_all_rows_in_cell: bool) -> Tuple[bool, str, str]: # MODIFIED: Added show_all_rows_in_cell
         old_stdout = sys.stdout
         sys.stdout = captured_output = StringIO()
 
         application_process_cwd = Path.cwd()
         
-        # Initialize with plain text, will be updated to HTML if needed
         output_type = 'text/plain' 
-        # Use a list to collect multiple parts of the result (e.g., stdout, dataframe, plot)
         final_result_representation_parts = []
-        
-        # Flag to indicate if a figure was handled by custom_display_func
         figure_explicitly_handled = False 
 
         try:
@@ -1293,39 +1296,41 @@ class NotebookApp:
                 logger.warning(f"User working directory '{user_working_dir}' is not a valid directory. "
                                f"Executing Python code in application CWD: '{application_process_cwd}'.")
 
-            # IMPORTANT: Clear all existing figures before running user code
-            # This prevents old plots from reappearing or being captured.
             plt.close('all') 
 
-            # Ensure plt is available in the execution environment
             exec_globals = {'pd': pd, 'np': np, 'asyncio': asyncio, 'plt': plt, **self.python_globals}
 
             def custom_display_func(obj):
                 nonlocal final_result_representation_parts, output_type, figure_explicitly_handled
                 if isinstance(obj, pd.DataFrame):
-                    final_result_representation_parts.append(obj.to_html(classes='dataframe', border=0, max_rows=20, escape=False))
+                    # MODIFIED: Use the passed show_all_rows_in_cell for max_rows
+                    max_rows_to_display = None if show_all_rows_in_cell else 20 
+                    html_table = obj.to_html(classes='dataframe', border=0, max_rows=max_rows_to_display, escape=False)
+                    
+                    message_suffix = ""
+                    if len(obj) > 20 and not show_all_rows_in_cell:
+                        message_suffix = f"<p>*Showing first 20 of {len(obj)} rows. To see all rows, toggle 'Show all rows' in this cell's header.*</p>"
+                    elif show_all_rows_in_cell and len(obj) > 20:
+                        message_suffix = f"<p>*Showing all {len(obj)} rows.*</p>"
+                    
+                    final_result_representation_parts.append(f"{html_table}{message_suffix}")
                     output_type = 'text/html'
-                elif isinstance(obj, matplotlib.figure.Figure): # NEW: Handle Matplotlib Figures
+
+                elif isinstance(obj, matplotlib.figure.Figure): 
                     buffer = io.BytesIO()
-                    # Save the figure to the in-memory buffer
                     obj.savefig(buffer, format='png', bbox_inches='tight', pad_inches=0.1) 
-                    # bbox_inches='tight' and pad_inches=0.1 help ensure the plot fits well
                     
                     image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
                     
-                    # Embed the base64 encoded image in an HTML <img> tag
                     final_result_representation_parts.append(
                         f'<img src="data:image/png;base64,{image_base64}" style="max-width: 100%; height: auto; display: block; margin: 10px 0;"/>'
                     )
-                    output_type = 'text/html' # Output type becomes HTML if a plot is included
-                    plt.close(obj) # Close the figure to free up memory
-                    figure_explicitly_handled = True # Mark that a figure was processed
+                    output_type = 'text/html' 
+                    plt.close(obj) 
+                    figure_explicitly_handled = True 
 
-                elif obj is not None: # Default for other non-None objects
-                    # Only add repr if it's not a displayable type already handled
-                    # This prevents adding redundant repr for DataFrames/Figures
+                elif obj is not None: 
                     final_result_representation_parts.append(repr(obj))
-                    # If only plain text is added here, ensure output_type reflects that unless already html
                     if output_type != 'text/html':
                          output_type = 'text/plain'
 
@@ -1343,24 +1348,16 @@ class NotebookApp:
 
             self.python_globals.update({
                 k: v for k, v in exec_globals.items()
-                # Exclude keys that are part of the execution environment, not user-defined globals
                 if not k.startswith('__') and k not in ['pd', 'np', 'display', 'asyncio', 'plt', 'matplotlib', 'io', 'base64']
             })
 
             std_out_content = captured_output.getvalue()
 
-            # NEW: Post-execution check for figures created implicitly
-            # This catches cases like `plt.plot(...)` where a figure is created but not explicitly
-            # returned or passed to `display()`. `plt.show()` in user code would normally finalize it.
-            # Since we use 'Agg' backend, plt.show() won't open a window, but we need to ensure
-            # any created figures are captured.
             if plt.get_fignums() and not figure_explicitly_handled:
                 for fig_num in plt.get_fignums():
-                    fig = plt.figure(fig_num) # Get the figure object by its number
-                    custom_display_func(fig) # Process this figure as well
+                    fig = plt.figure(fig_num) 
+                    custom_display_func(fig) 
 
-            # Handle implicit display of last expression if not already handled
-            # and if no figures were explicitly handled
             if not final_result_representation_parts and code.strip():
                 lines = code.strip().split('\n')
                 if lines:
@@ -1374,31 +1371,22 @@ class NotebookApp:
                     if is_simple_expression:
                         try:
                             evaluated_result = eval(last_line, exec_globals)
-                            # Pass the result to custom_display_func to handle DataFrames/Figures
-                            # If it's a simple type, it will be added as repr() by custom_display_func
                             custom_display_func(evaluated_result)
                         except Exception: 
-                            pass # Ignore errors during eval if it's not a displayable object
+                            pass 
 
-            # Combine all output parts
             final_result_representation = "\n".join(final_result_representation_parts)
 
             combined_output = ""
             if std_out_content:
-                # If there's stdout, always include it as pre-formatted text
                 combined_output = f"<pre>{std_out_content.strip()}</pre>"
-                # If there's also HTML output (DataFrame, plot), append it
                 if final_result_representation and output_type == 'text/html':
                     combined_output += f"\n{final_result_representation}"
-                # If there's only std_out and possibly plain text repr, combine them
                 elif final_result_representation:
                     combined_output += f"\n<pre>{final_result_representation}</pre>"
-                # Ensure output_type is HTML if any HTML content was added, else plain
                 output_type = 'text/html' if (final_result_representation and output_type == 'text/html') or std_out_content else 'text/plain'
             elif final_result_representation:
-                # If no stdout but there's a result (DF, plot, or repr)
                 combined_output = final_result_representation
-                # output_type should already be set correctly by custom_display_func
             
             if not combined_output.strip():
                 combined_output = "Code executed successfully (no output)."
@@ -1416,7 +1404,6 @@ class NotebookApp:
         finally:
             sys.stdout = old_stdout
             os.chdir(application_process_cwd)
-            # Ensure all figures are closed even if an error occurred
             plt.close('all') 
             logger.info(f"Restored CWD to: {application_process_cwd} after Python execution.")
 
@@ -1444,8 +1431,6 @@ async def pick_file_native(mode='save', file_types=None, initial_file: Optional[
         ui.notify("Native file picker is not available (tkinter module missing).", type='warning') # Notify user
         return None
 
-    # Default file_types if None is passed (e.g. for generic file operations not covered elsewhere)
-    # This specific default is less likely to be hit if called from save_cell_code or handle_save_notebook
     if file_types is None:
         file_types = [("All Files", "*.*")]
 
@@ -1461,41 +1446,38 @@ async def pick_file_native(mode='save', file_types=None, initial_file: Optional[
         if mode == 'save':
             _initial_file = initial_file if initial_file else "untitled"
 
-            # --- MODIFICATION START: Dynamic defaultextension and title ---
             _derived_defaultextension = ""
             if file_types and isinstance(file_types, list) and len(file_types) > 0:
                 first_file_type_pattern = file_types[0][1]
                 if isinstance(first_file_type_pattern, str) and first_file_type_pattern.startswith("*."):
                     if len(first_file_type_pattern) > 2 and first_file_type_pattern != "*.*":
-                        _derived_defaultextension = first_file_type_pattern[1:] # e.g., ".py", ".sql", ".dnb"
+                        _derived_defaultextension = first_file_type_pattern[1:] 
 
-            # Fallback for defaultextension if not derived from file_types and initial_file has an extension
             if not _derived_defaultextension and _initial_file:
                 try:
                     ext = Path(_initial_file).suffix
-                    if ext and ext != ".": # Ensure there is a suffix and it's not just "."
+                    if ext and ext != ".": 
                         _derived_defaultextension = ext
                 except Exception:
-                    pass # Ignore errors in deriving from initial_file
+                    pass 
 
-            _title = "Save File As" # Generic default title for saving
-            if _initial_file and "_cell_" in _initial_file: # Heuristic for cell saving
+            _title = "Save File As" 
+            if _initial_file and "_cell_" in _initial_file: 
                 _title = "Save Cell Code As"
             elif file_types and isinstance(file_types, list) and len(file_types) > 0:
-                 first_file_type_label = file_types[0][0] # e.g., "Data Notebook"
+                 first_file_type_label = file_types[0][0] 
                  if "notebook" in first_file_type_label.lower():
                      _title = "Save Notebook As"
-            # --- MODIFICATION END ---
 
             filepath = filedialog.asksaveasfilename(
                 initialdir=_initial_dir,
                 initialfile=_initial_file,
-                title=_title, # Use dynamic title
+                title=_title, 
                 filetypes=file_types,
-                defaultextension=_derived_defaultextension # Use dynamic default extension
+                defaultextension=_derived_defaultextension 
             )
         else: # mode == 'open'
-            _title = "Open File" # Generic default title for opening
+            _title = "Open File" 
             if file_types and isinstance(file_types, list) and len(file_types) > 0:
                  first_file_type_label = file_types[0][0]
                  if "notebook" in first_file_type_label.lower():
@@ -1503,7 +1485,7 @@ async def pick_file_native(mode='save', file_types=None, initial_file: Optional[
             
             filepath = filedialog.askopenfilename(
                 initialdir=_initial_dir,
-                title=_title, # Use dynamic title for open dialog too
+                title=_title, 
                 filetypes=file_types
             )
 
@@ -1524,13 +1506,12 @@ async def handle_save_notebook():
         ui.notify("Native file picker is not available (tkinter module missing).", type='warning')
         return
 
-    # MODIFIED: Removed initial_file and initial_dir as they are specific to cell saving
     filepath = await pick_file_native(mode='save', file_types=[("Data Notebook", "*.dnb"), ("All Files", "*.*")])
     if filepath:
         success = notebook.save_notebook(filepath)
         if success:
             ui.notify(f"Notebook saved successfully!", type='positive')
-            await update_working_directory_and_tree(str(notebook.working_directory)) # Trigger tree update
+            await update_working_directory_and_tree(str(notebook.working_directory)) 
         else:
             ui.notify("Failed to save notebook", type='negative')
 
@@ -1552,7 +1533,6 @@ async def handle_load_notebook():
 
 async def _do_load_notebook():
     """Actually perform the notebook loading"""
-    # MODIFIED: Removed initial_file and initial_dir as they are specific to cell saving
     filepath = await pick_file_native(mode='open', file_types=[("Data Notebook", "*.dnb"), ("All Files", "*.*")])
     if filepath:
         success = await notebook.load_notebook(filepath)
@@ -1561,7 +1541,6 @@ async def _do_load_notebook():
         else:
             ui.notify("Failed to load notebook", type='negative')
 
-# NEW: handle_new_notebook() function (Consolidated and kept)
 async def handle_new_notebook():
     """Handle creating a new notebook"""
     if notebook.is_modified:
@@ -1580,18 +1559,16 @@ async def handle_new_notebook():
         await notebook.new_notebook()
         ui.notify("New notebook created", type='positive')
 
-# NEW FEATURE: Function to save individual cell code
 async def save_cell_code(cell_data: Dict[str, Any]):
     """Saves the code of a specific cell to a file in the working directory."""
     
     code_content = cell_data['code'].value
-    cell_type = cell_data['type'].value.lower() # 'sql' or 'python'
+    cell_type = cell_data['type'].value.lower() 
     
     if not code_content.strip():
         ui.notify("Cell is empty. Nothing to save.", type='warning')
         return
 
-    # Determine file extension
     if cell_type == 'sql':
         file_extension = '.sql'
     elif cell_type == 'python':
@@ -1600,22 +1577,18 @@ async def save_cell_code(cell_data: Dict[str, Any]):
         ui.notify(f"Unsupported cell type for saving: {cell_type}", type='negative')
         return
 
-    # Generate a base for the filename
     base_name_stem = "untitled"
     if notebook.current_filename:
-        base_name_stem = Path(notebook.current_filename).stem # Get filename without .dnb extension
+        base_name_stem = Path(notebook.current_filename).stem 
     
     filename_stem = f"{base_name_stem}_cell_{cell_data['id']}"
     
     target_dir = notebook.working_directory
     
-    # Handle potential filename conflicts by appending a number if needed
     counter = 0
-    # Initial proposed filename (without number suffix yet)
     current_filename_suggestion = f"{filename_stem}{file_extension}"
     actual_filepath = target_dir / current_filename_suggestion
     
-    # Loop if the file already exists, appending _1, _2, etc.
     while actual_filepath.exists():
         counter += 1
         current_filename_suggestion = f"{filename_stem}_{counter}{file_extension}"
@@ -1625,7 +1598,7 @@ async def save_cell_code(cell_data: Dict[str, Any]):
         logger.info(f"Attempting to write cell code to: {actual_filepath}")
         actual_filepath.write_text(code_content, encoding='utf-8')
         ui.notify(f"Cell code saved as '{actual_filepath.name}' in working directory.", type='positive')
-        await refresh_file_tree_ui() # Refresh the file tree to show the new file
+        await refresh_file_tree_ui() 
     except Exception as e:
         logger.error(f"Failed to save cell code to {actual_filepath}: {e}", exc_info=True)
         ui.notify(f"Failed to save cell code: {e}", type='negative')
@@ -1636,13 +1609,10 @@ async def refresh_file_tree_ui():
     global file_tree, tree_container
     
     if not file_tree or not tree_container:
-        # UI components not yet initialized, skip refresh
         return
 
-    # Create new tree nodes and get current state snapshot
     new_tree_nodes, new_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
 
-    # Compare with last known state
     if new_state_snapshot != notebook.last_tree_state:
         logger.info("File tree changed. Updating UI...")
         tree_container.clear()
@@ -1651,13 +1621,11 @@ async def refresh_file_tree_ui():
                 new_tree_nodes, label_key='label', children_key='children', node_key='id',
             ).classes('w-full')
 
-            # --- MODIFIED: Changed from 'click' to 'node_dblclick' for .dnb files ---
             def on_tree_double_click(event):
                 if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
                     asyncio.create_task(load_notebook_from_path(event.node['path']))
             
-            file_tree.on('node_dblclick', on_tree_double_click) # Attach to double click
-            # --- END MODIFIED ---
+            file_tree.on('node_dblclick', on_tree_double_click) 
 
             if new_tree_nodes:
                 expand_ids = [node['id'] for node in new_tree_nodes if not node.get('is_file', True) and 'children' in node]
@@ -1666,10 +1634,8 @@ async def refresh_file_tree_ui():
             else:
                 ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-grey')
         
-        # Update the last known state
         notebook.last_tree_state = new_state_snapshot
         
-        # Trigger JavaScript to colorize .dnb files
         ui.run_javascript('colorizeDnbFiles()')
 
 async def pick_directory_native() -> Optional[str]:
@@ -1708,7 +1674,6 @@ async def handle_browse_working_directory():
         logger.info(f"Native directory picker returned: {selected_path_str}")
         if working_dir_input:
             working_dir_input.set_value(selected_path_str)
-        # Call update_working_directory_and_tree, which now triggers refresh_file_tree_ui
         await update_working_directory_and_tree(selected_path_str)
     else:
         logger.info("Native directory picker cancelled or returned no path.")
@@ -1732,7 +1697,7 @@ async def update_working_directory_and_tree(new_path_str: str):
     if new_resolved_path == notebook.working_directory:
         if working_dir_input: 
             working_dir_input.set_value(str(notebook.working_directory))
-        await refresh_file_tree_ui() # Still refresh in case contents changed without path changing
+        await refresh_file_tree_ui() 
         return
 
     if not new_resolved_path.is_dir():
@@ -1750,7 +1715,6 @@ async def update_working_directory_and_tree(new_path_str: str):
         display_path = get_last_n_path_parts(str(notebook.working_directory), 2)
         working_dir_display.text = display_path
 
-    # Force a refresh after changing directory
     await refresh_file_tree_ui() 
 
 async def load_notebook_from_path(filepath: str):
@@ -1777,11 +1741,32 @@ async def load_notebook_from_path(filepath: str):
         else:
             ui.notify("Failed to load notebook", type='negative')
 
-async def add_cell(cell_type='sql'):
+# MODIFIED: Added initial_show_all_rows parameter
+async def add_cell(cell_type='sql', initial_show_all_rows=False):
     cell_id = notebook.generate_cell_id()
+    
+    # Create the cell_data dictionary early to hold the switch state and other cell properties
+    cell_data_dict = {
+        'id': cell_id,
+        'show_all_rows': initial_show_all_rows, # Initialize the state here
+        'type': None, # Placeholder, will be updated
+        'code': None, # Placeholder
+        'output': None, # Placeholder
+        'df_name': None, # Placeholder
+        'container': None, # Placeholder
+        'execution_status': None, # Placeholder
+        'timer_label': None, # Placeholder
+        'spinner': None, # Placeholder
+        'execution_result': None, # Placeholder
+        'result_icon': None, # Placeholder
+        'result_time': None, # Placeholder
+        'is_collapsed': lambda: False, # Placeholder, updated later
+        'toggle_collapse': None # Placeholder
+    }
+
     with cell_container:
         cell_element = ui.column().classes('code-cell w-full cell-with-gutter')
-        is_collapsed = False
+        is_collapsed = False # Closure variable for toggle_collapse
 
         with cell_element:
             with ui.row().classes('code-cell-header w-full'):
@@ -1790,17 +1775,26 @@ async def add_cell(cell_type='sql'):
                 cell_type_select = ui.select(options=['SQL', 'Python'], value=initial_select_value).classes('w-25 header-control-padding')
                 df_name_input = ui.input(placeholder='  Save to Dataframe :', value='').classes('w-29 header-control-padding')
                 df_name_input.visible = cell_type.upper() == 'SQL'
+                
+                # NEW: Per-cell "Show all rows" switch
+                show_all_rows_switch = ui.switch('Show all rows', value=cell_data_dict['show_all_rows']) \
+                                        .classes('text-sm mr-2').props('dense color=primary')
+                
+                # Use a regular on_value_change handler to update the dictionary
+                def on_show_all_rows_change(e):
+                    cell_data_dict['show_all_rows'] = e.value # Update the dictionary directly
+                    notebook.mark_modified()
+                show_all_rows_switch.on_value_change(on_show_all_rows_change)
+
                 cell_preview = ui.label('').classes('cell-preview')
                 cell_preview.visible = False
                 
-                # NEW: Add save cell button
                 ui.space()
                 save_cell_btn = ui.button(icon='save_alt', color='primary').classes('save-button')
                 
                 delete_btn = ui.button('✖', color='red').classes('delete-button').props('round')
-                # IMPORTANT: Adjust class for delete_btn to account for new save_cell_btn
-                delete_btn.classes(remove='q-ml-auto') # Remove old margin if it conflicts with the new button
-                delete_btn # Add a small margin to separate from save_cell_btn
+                delete_btn.classes(remove='q-ml-auto') 
+                delete_btn 
 
             with ui.column().classes('code-cell-content w-full') as cell_content:
                 cm_language = cell_type.lower()
@@ -1821,14 +1815,17 @@ async def add_cell(cell_type='sql'):
                     result_time = ui.label('').classes('gutter-timer-text')
                 execution_result.visible = False
         
-        # Moved run_cell definition here, before it's used in on_click or cell_data
         async def run_cell():
-            nonlocal is_collapsed # Declare nonlocal to modify is_collapsed
+            nonlocal is_collapsed 
             if is_collapsed: 
                 toggle_collapse()
             code = code_editor.value
             cell_type_val = cell_type_select.value
-            logger.info(f"[{cell_id}] Run: {cell_type_val}, Code: {code[:50]!r}")
+            
+            # Get the current state of this cell's "show all rows" switch from cell_data_dict
+            current_show_all_rows = cell_data_dict['show_all_rows'] 
+
+            logger.info(f"[{cell_id}] Run: {cell_type_val}, Code: {code[:50]!r}, Show All Rows: {current_show_all_rows}")
             if not code.strip():
                 output_area.set_content('No code to execute.')
                 output_area.visible = True
@@ -1856,9 +1853,16 @@ async def add_cell(cell_type='sql'):
                     result_df, message, saved_name = notebook.execute_sql(code, df_name or None)
                     if result_df is not None:
                         execution_success = True
-                        output_text = f"Shape: {result_df.shape}\n\n{result_df.head(20).to_html(classes='dataframe', border=0, escape=False)}"
-                        if len(result_df) > 20: 
-                            output_text += f"\n\n*Showing first 20 of {len(result_df)} rows.*"
+                        
+                        max_rows_to_display = None if current_show_all_rows else 20
+                        
+                        output_text = f"Shape: {result_df.shape}\n\n{result_df.to_html(classes='dataframe', border=0, max_rows=max_rows_to_display, escape=False)}"
+                        
+                        if len(result_df) > 20 and not current_show_all_rows:
+                            output_text += f"\n\n*Showing first 20 of {len(result_df)} rows. To see all rows, toggle 'Show all rows' in this cell's header.*"
+                        elif current_show_all_rows and len(result_df) > 20:
+                            output_text += f"\n\n*Showing all {len(result_df)} rows.*"
+                        
                         output_area.set_content(output_text)
                         notebook.mark_modified()
                     else:
@@ -1867,7 +1871,7 @@ async def add_cell(cell_type='sql'):
                         ui.notify(f"Cell {cell_id}: SQL error.", type='negative')
 
                 elif cell_type_val == 'Python':
-                    success, py_output, py_output_type = await notebook.execute_python(code)
+                    success, py_output, py_output_type = await notebook.execute_python(code, current_show_all_rows) 
                     execution_success = success
                     if success:
                         output_area.set_content(py_output if py_output_type == 'text/html' else f"```\n{py_output}\n```")
@@ -1906,6 +1910,11 @@ async def add_cell(cell_type='sql'):
             else:
                 cell_element.classes(remove='collapsed')
                 cell_preview.visible = False
+        
+        # Update the toggle_collapse function reference in cell_data_dict
+        cell_data_dict['toggle_collapse'] = toggle_collapse
+        cell_data_dict['is_collapsed'] = lambda: is_collapsed # Capture latest is_collapsed state
+
         collapse_btn.on('click', toggle_collapse)
 
         def on_cell_type_change():
@@ -1922,24 +1931,31 @@ async def add_cell(cell_type='sql'):
             notebook.mark_modified()
         df_name_input.on_value_change(on_df_name_change)
 
-    cell_data = {'id': cell_id, 'type': cell_type_select, 'code': code_editor,
-                'output': output_area, 'df_name': df_name_input, 'container': cell_element,
-                'execution_status': execution_status, 'timer_label': timer_label, 'spinner': spinner,
-                'execution_result': execution_result, 'result_icon': result_icon, 'result_time': result_time,
-                'is_collapsed': lambda: is_collapsed, 'toggle_collapse': toggle_collapse}
-    notebook.cells.append(cell_data)
+    # Populate the remaining UI element references in cell_data_dict
+    cell_data_dict.update({
+        'type': cell_type_select, 
+        'code': code_editor,
+        'output': output_area, 
+        'df_name': df_name_input, 
+        'container': cell_element,
+        'execution_status': execution_status, 
+        'timer_label': timer_label, 
+        'spinner': spinner,
+        'execution_result': execution_result, 
+        'result_icon': result_icon, 
+        'result_time': result_time,
+    })
+    notebook.cells.append(cell_data_dict) # Append the complete dict to notebook.cells
 
     def delete_cell():
-        notebook.cells.remove(cell_data)
+        notebook.cells.remove(cell_data_dict) # Use the dictionary directly
         cell_element.delete()
         notebook.mark_modified()
     
     run_btn.on_click(run_cell)
     delete_btn.on_click(delete_cell)
-    # NEW: Attach save_cell_code to the save button
-    save_cell_btn.on_click(functools.partial(save_cell_code, cell_data))
+    save_cell_btn.on_click(functools.partial(save_cell_code, cell_data_dict))
     
-    # This ensures the add cell button is always at the bottom if it's part of the cell_container
     if hasattr(cell_container, '_add_cell_button'): 
         cell_container._add_cell_button.move(target_index=-1)
 
@@ -1950,13 +1966,11 @@ async def add_cell_and_mark_modified(cell_type='sql'):
 
 async def setup_keyboard_shortcuts():
     """Setup keyboard shortcuts for save/load/new"""
-    # Only register Python-handled shortcuts (Alt+S/O/N). Cell execution is handled by JS.
     ui.keyboard(on_key=handle_keyboard_shortcut)
 
 def handle_keyboard_shortcut(event):
     """Handle keyboard shortcuts (Python side)"""
-    if event.action.keydown: # Ensure it's a keydown event
-        # Existing Alt shortcuts
+    if event.action.keydown: 
         if event.modifiers.alt:
             if event.key.name == 's':
                 asyncio.create_task(handle_save_notebook())
@@ -1964,13 +1978,10 @@ def handle_keyboard_shortcut(event):
                 asyncio.create_task(handle_load_notebook())
             elif event.key.name == 'n':
                 asyncio.create_task(handle_new_notebook())
-        # NEW: Ctrl+B to toggle left drawer
         elif event.modifiers.ctrl and event.key.name == 'b':
-            if left_drawer_instance: # Check if the drawer object is initialized
+            if left_drawer_instance: 
                 left_drawer_instance.toggle()
                
-
-
 def toggle_dark_mode():
     """Toggle dark mode"""
     notebook.is_dark_mode = not notebook.is_dark_mode
@@ -2008,17 +2019,13 @@ with main_container:
             title_label = ui.label('Untitled').classes('text-2xl font-bold')
             notebook.title_label = title_label
                 
-
             with ui.row().classes('notebook-controls ml-20'):
-                ui.row()
                 dark_mode_btn = ui.button(icon='light_mode', on_click=toggle_dark_mode).props('flat round').style('margin-top: -6px;')
-                ui.row()
-                ui.row()
-                # FIX: Changed on_click from handle_save_notebook to handle_new_notebook
+                # REMOVED: Global "Show all rows" switch from toolbar
                 ui.button('New', on_click=handle_new_notebook).classes('save-load-button').tooltip('New Notebook (Alt+N)').style('margin-top: 3px;')
                 ui.button('Open', on_click=handle_load_notebook).classes('save-load-button').tooltip('Open Notebook (Alt+O)').style('margin-top: 3px;')
                 ui.button('Save', on_click=handle_save_notebook).classes('save-load-button').tooltip('Save Notebook (Alt+S)').style('margin-top: 3px;')
-
+                
 
             with ui.row().classes('connection-status'):
                 async def handle_reconnect():
@@ -2041,7 +2048,6 @@ with main_container:
 
         cell_container = ui.column().classes('w-full cell-container')
         with cell_container:
-            # Give the Add Cell button a specific ID for JavaScript to target
             cell_container._add_cell_button = ui.button('+ Add Cell', on_click=lambda: asyncio.create_task(add_cell_and_mark_modified('sql'))).classes('add-cell-button').props('id=add-cell-button')
 
 # --- Left Drawer for File Explorer ---
@@ -2067,30 +2073,24 @@ with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True
         # Section 2 
         with ui.scroll_area().classes('col q-pl-sm file-tree-container').style('margin-left: -24px') as tc_instance:
             tree_container = tc_instance
-            # Initial tree load: Use the new function signature and initialize last_tree_state
             initial_tree_nodes, initial_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
-            notebook.last_tree_state = initial_state_snapshot # Set initial state
+            notebook.last_tree_state = initial_state_snapshot 
             
             file_tree = ui.tree(initial_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full')
 
-            # --- MODIFIED: Changed from 'click' to 'node_dblclick' for .dnb files ---
             def on_tree_double_click(event):
                 if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
                     asyncio.create_task(load_notebook_from_path(event.node['path']))
             
-            file_tree.on('node_dblclick', on_tree_double_click) # Attach to double click
-            # REMOVED: file_tree.on('click', on_tree_click) was here.
-            # --- END MODIFIED ---
+            file_tree.on('node_dblclick', on_tree_double_click) 
 
             if initial_tree_nodes:
                 expand_ids = [node['id'] for node in initial_tree_nodes if not node.get('is_file', True) and 'children' in node]
                 if expand_ids: 
                     file_tree.expand(expand_ids)
             else:
-                with tree_container: 
-                    ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
+                ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
             
-            # Trigger JavaScript to colorize .dnb files after initial load
             ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
 
 # --- Connection Dialog ---
@@ -2154,10 +2154,9 @@ async def initialize_app():
     
     await setup_keyboard_shortcuts()
     
-    # Start the periodic file tree refresh
-    ui.timer(0.5, refresh_file_tree_ui) # Refresh every 0.5 seconds
+    ui.timer(0.5, refresh_file_tree_ui) 
 
-ui.timer(0.1, initialize_app, once=True) # Keep this to run initial setup
+ui.timer(0.1, initialize_app, once=True) 
 
 reload_dir = str(Path(__file__).resolve().parent)
 app_source_dir = str(Path(__file__).resolve().parent)
