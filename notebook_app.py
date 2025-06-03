@@ -2169,7 +2169,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         native=False, 
         reload=False, 
         show=True, 
-        favicon='🌐', 
+        favicon='🔶', 
         uvicorn_reload_dirs=None, 
         storage_secret="a_nice_secret_key_for_storage"
     )
