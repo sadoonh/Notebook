@@ -1069,18 +1069,20 @@ class NotebookApp:
     async def connect_to_database(self, config: Dict[str, Any]):
         self.connection_config = config
         if self.db_connection:
-            try: 
-                self.db_connection.close()
-            except Exception: 
+            try:
+                # Wrap close() in asyncio.to_thread
+                await asyncio.to_thread(self.db_connection.close)
+            except Exception:
                 pass
-            finally: 
+            finally:
                 self.db_connection = None
         if self.ssh_tunnel:
-            try: 
-                self.ssh_tunnel.stop()
-            except Exception: 
+            try:
+                # Wrap stop() in asyncio.to_thread
+                await asyncio.to_thread(self.ssh_tunnel.stop)
+            except Exception:
                 pass
-            finally: 
+            finally:
                 self.ssh_tunnel = None
 
         try:
@@ -1089,26 +1091,33 @@ class NotebookApp:
                 logger.info("SSH configuration detected. Establishing SSH tunnel...")
                 self.ssh_tunnel = SSHTunnelForwarder(
                     (config['ssh_host'], int(config.get('ssh_port', 22))),
-                    ssh_username=config['ssh_username'], 
+                    ssh_username=config['ssh_username'],
                     ssh_pkey=config['ssh_private_key'],
                     remote_bind_address=(config['db_host'], int(config['db_port'])),
                     local_bind_address=('localhost', 6543))
-                self.ssh_tunnel.start()
+                
+                # Wrap start() in asyncio.to_thread
+                await asyncio.to_thread(self.ssh_tunnel.start)
+                
                 logger.info("Connecting to database through SSH tunnel...")
-                self.db_connection = psycopg2.connect(
-                    host=self.ssh_tunnel.local_bind_host, 
+                # Wrap psycopg2.connect() in asyncio.to_thread
+                self.db_connection = await asyncio.to_thread(
+                    psycopg2.connect,
+                    host=self.ssh_tunnel.local_bind_host,
                     port=self.ssh_tunnel.local_bind_port,
-                    database=config['db_name'], 
-                    user=config['db_user'], 
+                    database=config['db_name'],
+                    user=config['db_user'],
                     password=config['db_password'])
                 logger.info("Database connection established via SSH tunnel")
             else:
                 logger.info("No SSH configuration provided. Connecting directly to database...")
-                self.db_connection = psycopg2.connect(
-                    host=config['db_host'], 
+                # Wrap psycopg2.connect() in asyncio.to_thread
+                self.db_connection = await asyncio.to_thread(
+                    psycopg2.connect,
+                    host=config['db_host'],
                     port=int(config['db_port']),
-                    database=config['db_name'], 
-                    user=config['db_user'], 
+                    database=config['db_name'],
+                    user=config['db_user'],
                     password=config['db_password'])
                 logger.info("Direct database connection established")
 
@@ -1118,24 +1127,26 @@ class NotebookApp:
         except Exception as e:
             logger.error(f"Connection error: {e}", exc_info=True)
             if self.ssh_tunnel and hasattr(self.ssh_tunnel, 'is_active') and self.ssh_tunnel.is_active:
-                try: 
-                    self.ssh_tunnel.stop()
-                except Exception: 
+                try:
+                    # Wrap stop() in asyncio.to_thread
+                    await asyncio.to_thread(self.ssh_tunnel.stop)
+                except Exception:
                     pass
             self.ssh_tunnel = None
             if self.db_connection:
-                try: 
-                    self.db_connection.close()
-                except Exception: 
+                try:
+                    # Wrap close() in asyncio.to_thread
+                    await asyncio.to_thread(self.db_connection.close)
+                except Exception:
                     pass
                 self.db_connection = None
             return False, str(e)
 
-    def execute_sql(self, query: str, save_to_df: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
+    async def execute_sql(self, query: str, save_to_df: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
         if not self.db_connection:
             return None, "Not connected to database", None
         try:
-            df = pd.read_sql_query(query, self.db_connection)
+            df = await asyncio.to_thread(pd.read_sql_query, query, self.db_connection)
             if save_to_df:
                 self.dataframes[save_to_df] = df
                 self.python_globals[save_to_df] = df
@@ -1845,7 +1856,7 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
 
                 if cell_type_val == 'SQL':
                     df_name = df_name_input.value.strip()
-                    result_df, message, saved_name = notebook.execute_sql(code, df_name or None)
+                    result_df, message, saved_name = await notebook.execute_sql(code, df_name or None)
                     if result_df is not None:
                         execution_success = True
                         
