@@ -551,7 +551,7 @@ body {
 .cell-gutter {
     position: absolute;
     left: -50px;
-    bottom: 8px;
+    top: 8px;
     width: 40px;
     display: flex;
     flex-direction: column;
@@ -561,11 +561,6 @@ body {
     transition: all 0.3s ease;
 }
 
-.code-cell.collapsed .cell-gutter {
-    bottom: auto;
-    top: 50%;
-    transform: translateY(-45%);
-}
 
 .gutter-run-button {
     width: 35px !important;
