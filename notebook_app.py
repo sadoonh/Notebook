@@ -74,7 +74,7 @@ div[class*="q-drawer"]::-webkit-scrollbar-track,
 textarea::-webkit-scrollbar-track
 {
     background: var(--bg-secondary); /* Track color, slightly offset from main bg */
-    border-radius: 5_px;
+    border-radius: 5px;
 }
 
 html::-webkit-scrollbar-thumb,
@@ -1178,6 +1178,20 @@ class NotebookApp:
                 self.db_connection = None
             return False, str(e)
 
+    async def execute_sql(self, query: str, save_to_df: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
+        if not self.db_connection:
+            return None, "Not connected to database", None
+        try:
+            df = await asyncio.to_thread(pd.read_sql_query, query, self.db_connection)
+            if save_to_df:
+                self.dataframes[save_to_df] = df
+                self.python_globals[save_to_df] = df
+                return df, f"Query successful. DataFrame saved as '{save_to_df}'.", save_to_df
+            return df, "Query successful.", None
+        except Exception as e:
+            logger.error(f"Query execution error: {e}", exc_info=True)
+            return None, str(e), None
+
     def mark_modified(self):
         self.is_modified = True
         if hasattr(self, 'title_label'):
@@ -1822,7 +1836,7 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
         # NEW: For output and download button
         'output_container': None, 
         'output_area_markdown': None, 
-        'download_button_row': None,
+        'download_button_row': None, # Keep this reference
         'df_to_download': None 
     }
 
@@ -1859,20 +1873,20 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                 code_editor = ui.codemirror(value='', language=cm_language, theme=current_cm_theme).classes('w-full code-editor')
                 code_editor.props(f'data-cell-id="{cell_id}"')
                 
+                download_button_row_el = ui.row().classes('w-full justify-start pl-2 pt-1 pb-1 -mt-5 -mb-5') # Adjusted padding for placement
+                with download_button_row_el:
+                    download_csv_button = ui.button('Download Table as CSV', icon='download',
+                                                    on_click=lambda: asyncio.create_task(handle_download_csv(cell_data_dict))) \
+                                            .props('dense flat color=primary text-color=primary') \
+                                            .style('font-size: 0.75rem; padding: 2px 6px;')
+                download_button_row_el.visible = False 
                 # Output area structure
                 output_container_el = ui.column().classes('output-container w-full')
                 output_container_el.visible = False # Initially hidden
                 with output_container_el:
                     output_area_markdown_el = ui.markdown('').classes('output-area-content w-full')
-                    download_button_row_el = ui.row().classes('w-full justify-start pl-2 pb-1 pt-0') # Reduced padding
-                    with download_button_row_el:
-                        # The lambda now calls the globally defined handle_download_csv
-                        download_csv_button = ui.button('Download Table as CSV', icon='download',
-                                                        on_click=lambda: asyncio.create_task(handle_download_csv(cell_data_dict))) \
-                                                .props('dense flat color=primary text-color=primary') \
-                                                .style('font-size: 0.75rem; padding: 2px 6px;') # Smaller font and padding
-                    download_button_row_el.visible = False
-
+                    # Removed download_button_row_el from here
+            
             with ui.column().classes('cell-gutter') as cell_gutter:
                 run_btn = ui.button('▶', color='primary').classes('gutter-run-button')
                 with ui.column().classes('gutter-execution-status') as execution_status:
@@ -1894,7 +1908,7 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
 
             # Reset output state for the cell before running
             cell_data_dict['output_container'].visible = False
-            cell_data_dict['download_button_row'].visible = False
+            cell_data_dict['download_button_row'].visible = False # Keep this line
             cell_data_dict['df_to_download'] = None
             cell_data_dict['output_area_markdown'].set_content('')
 
@@ -1978,13 +1992,12 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                                     remove='result-error' if execution_success else 'result-success')
                 result_time.text = f'{final_time:.2f}s' if final_time < 1 else f'{final_time:.1f}s'
                 run_btn.enable()
-                # Ensure output container is visible if there's content
-                if cell_data_dict['output_area_markdown'].content or cell_data_dict['output_area_markdown']._props.get('innerHTML'):
+                # Ensure output container is visible if there's content OR download button is visible
+                if cell_data_dict['output_area_markdown'].content or cell_data_dict['output_area_markdown']._props.get('innerHTML') or cell_data_dict['download_button_row'].visible:
                     cell_data_dict['output_container'].visible = True
-                else: # Should not happen if logic above is correct
+                else: 
                     cell_data_dict['output_container'].visible = False
             logger.info(f"[{cell_id}] End run_cell. Output container visible: {cell_data_dict['output_container'].visible}")
-
 
         def toggle_collapse():
             nonlocal is_collapsed
@@ -2031,7 +2044,7 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
         'result_time': result_time,
         'output_container': output_container_el,
         'output_area_markdown': output_area_markdown_el,
-        'download_button_row': download_button_row_el,
+        'download_button_row': download_button_row_el, # Ensure this is captured in the dict
     })
     notebook.cells.append(cell_data_dict)
 
@@ -2216,7 +2229,7 @@ with ui.dialog() as connection_dialog:
             ssh_key_path = ui.input('SSH Private Key Path', value=saved_creds.get('ssh_private_key', ''), placeholder='')
         
         # Modified checkbox label
-        save_creds_checkbox = ui.checkbox('Save connection details', value=bool(saved_creds.get('db_password')))
+        save_creds_checkbox = ui.checkbox('Save connection details (including password)', value=bool(saved_creds.get('db_password')))
         
         with ui.row().classes('w-full justify-end mt-4'):
             ui.button('Cancel', on_click=connection_dialog.close)
