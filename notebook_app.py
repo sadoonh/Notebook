@@ -37,8 +37,7 @@ logger = logging.getLogger(__name__)
 if not TKINTER_AVAILABLE:
     logger.warning("tkinter module not found. Native directory picker will be disabled.")
 
-# Custom CSS (no changes needed here for functionality, but keeping it for context)
-# MODIFIED: Removed the 'add new cell' logic from Shift+Enter in the JavaScript
+# Custom CSS
 custom_css = """
 <style>
 * {
@@ -54,6 +53,64 @@ html, body {
     min-height: 100%;
 }
 
+html::-webkit-scrollbar,
+.output-area-content::-webkit-scrollbar,
+.cm-scroller::-webkit-scrollbar, /* CodeMirror editor scroll */
+.file-tree-container::-webkit-scrollbar, /* Left drawer file tree */
+.q-scrollarea__content::-webkit-scrollbar, /* Generic Quasar/NiceGUI scroll area */
+div[class*="q-drawer"]::-webkit-scrollbar, /* For drawers if they scroll internally */
+textarea::-webkit-scrollbar /* For textareas if they scroll */
+{
+    width: 10px;  /* Width of vertical scrollbar */
+    height: 10px; /* Height of horizontal scrollbar */
+}
+
+html::-webkit-scrollbar-track,
+.output-area-content::-webkit-scrollbar-track,
+.cm-scroller::-webkit-scrollbar-track,
+.file-tree-container::-webkit-scrollbar-track,
+.q-scrollarea__content::-webkit-scrollbar-track,
+div[class*="q-drawer"]::-webkit-scrollbar-track,
+textarea::-webkit-scrollbar-track
+{
+    background: var(--bg-secondary); /* Track color, slightly offset from main bg */
+    border-radius: 5_px;
+}
+
+html::-webkit-scrollbar-thumb,
+.output-area-content::-webkit-scrollbar-thumb,
+.cm-scroller::-webkit-scrollbar-thumb,
+.file-tree-container::-webkit-scrollbar-thumb,
+.q-scrollarea__content::-webkit-scrollbar-thumb,
+div[class*="q-drawer"]::-webkit-scrollbar-thumb,
+textarea::-webkit-scrollbar-thumb
+{
+    background-color: var(--text-secondary); /* Thumb color */
+    border-radius: 5px;
+    border: 2px solid var(--bg-secondary); /* Creates a small border around the thumb, matching the track */
+}
+
+html::-webkit-scrollbar-thumb:hover,
+.output-area-content::-webkit-scrollbar-thumb:hover,
+.cm-scroller::-webkit-scrollbar-thumb:hover,
+.file-tree-container::-webkit-scrollbar-thumb:hover,
+.q-scrollarea__content::-webkit-scrollbar-thumb:hover,
+div[class*="q-drawer"]::-webkit-scrollbar-thumb:hover,
+textarea::-webkit-scrollbar-thumb:hover
+{
+    background-color: var(--text-primary); /* Thumb color on hover */
+}
+
+html::-webkit-scrollbar-corner,
+.output-area-content::-webkit-scrollbar-corner,
+.cm-scroller::-webkit-scrollbar-corner,
+.file-tree-container::-webkit-scrollbar-corner,
+.q-scrollarea__content::-webkit-scrollbar-corner,
+div[class*="q-drawer"]::-webkit-scrollbar-corner,
+textarea::-webkit-scrollbar-corner {
+    background: var(--bg-secondary); /* Color of the bottom-right corner where scrollbars meet */
+}
+
 :root {
     --bg-primary: #ffffff;
     --bg-secondary: #f8f8f8;
@@ -67,14 +124,14 @@ html, body {
 }
 
 .dark-mode {
-    --bg-primary: #121212;
-    --bg-secondary: #121212;
-    --bg-tertiary: #2d2d2d;
+    --bg-primary: #181818;
+    --bg-secondary: #181818;
+    --bg-tertiary: #242424;
     --bg-output: #1a1a1a;
     --text-primary: #ffffff;
     --text-secondary: #e0e0e0;
     --border-color:  #444444;
-    --input-bg: #2d2d2d;
+    --input-bg: #242424;
     --text-primary-rgb: 255,255,255;
 }
 
@@ -94,10 +151,10 @@ body {
 
 .code-cell {
     border: 1px solid var(--border-color);
-    border-top-left-radius: 16px;   /* Round top corners */
-    border-top-right-radius: 16px; /* Apply overall rounding here */
+    border-top-left-radius: 16px;
+    border-top-right-radius: 16px;
     margin-bottom: 8px;
-    background-color: var(--bg-tertiary); /* Base background for the cell */
+    background-color: var(--bg-tertiary);
     transition: all 0.3s ease;
     max-width: 800px;
     margin-left: 0px;
@@ -110,24 +167,23 @@ body {
 
 .code-cell-header {
     display: flex;
-    border-top-left-radius: 16px;   /* Round top corners */
-    border-top-right-radius: 16px;  /* Round top corners */
+    border-top-left-radius: 20px;
+    border-top-right-radius: 16px;
     align-items: center;
-    background-color: var(--bg-tertiary); /* Header background */
-    border-bottom: 1px solid #fff8e6; /* Separator line */
-    padding: 8px 12px; /* Added padding to header */
+    background-color: var(--bg-tertiary);
+    border-bottom: 1px solid #fff8e6;
+    padding: 8px 12px;
 }
 
 .code-cell.collapsed .code-cell-header {
-    border-bottom: none; /* No separator when collapsed */
-    border-bottom-left-radius: 16px;  /* Round bottom corners when collapsed */
-    border-bottom-right-radius: 16px; /* Round bottom corners when collapsed */
+    border-bottom: none;
+    border-bottom-left-radius: 16px;
+    border-bottom-right-radius: 16px;
 }
 
 .code-cell-content {
     transition: all 0.3s ease;
-    overflow: hidden; /* Ensure internal clipping */
-    /* No specific background here, depends on cm-editor or output-area */
+    overflow: hidden;
 }
 
 .code-cell.collapsed .code-cell-content {
@@ -166,26 +222,30 @@ body {
     transform: rotate(-180deg);
 }
 
-.output-area {
-    border-bottom-left-radius: 16px;  /* Round bottom-left for output */
-    border-bottom-right-radius: 16px; /* Round bottom-right for output */
-    background-color: var(--bg-primary); /* Output background */
+/* MODIFIED: Renamed .output-area to .output-container */
+.output-container {
+    border-bottom-left-radius: 16px;
+    border-bottom-right-radius: 16px;
+    background-color: var(--bg-primary);
     border-top: 1px solid var(--border-color); /* Separates output from editor */
+    overflow: hidden; /* To ensure children respect rounded corners */
+}
+
+/* NEW: Styles for the content part of the output */
+.output-area-content {
     font-family: monospace;
     font-size: 14px;
     max-height: 700px;
     overflow-y: auto;
     color: var(--text-primary);
-    padding-top: 12px;
-    padding-bottom: 12px;
-    padding-left: 12px;
-    padding-right: 12px;
-
+    padding: 12px; /* Padding for the content itself */
 }
 
-.output-area > div {
+/* MODIFIED: For child div if markdown creates one */
+.output-area-content > div {
     overflow-x: auto;
 }
+
 
 .execution-status {
     display: flex;
@@ -232,7 +292,7 @@ body {
 }
 
 .delete-button {
-    margin-right: 12px;
+    margin-right: auto;
     font-size: 16px !important;
     padding: 0px 0px !important;
     min-height: 27px !important;
@@ -255,6 +315,7 @@ body {
     min-width: 30px !important;
     width: 30px !important;
     transition: all 0.3s ease;
+    margin-rght: auto;
 }
 
 .save-button:hover {
@@ -265,12 +326,17 @@ body {
 
 .toolbar {
     display: flex;
-    gap: 12px;
-    padding: 10px 22px;
-    height: 50px;
+    gap: 6px;
+    padding: 0px 10px;
+    height: 45px;
     background-color: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-color);
     color: var(--text-primary);
+    align-items: center;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    width: 100%;
 }
 
 .connection-status { 
@@ -294,22 +360,18 @@ body {
     background-color: #f44336; 
 }
 
-/* CHANGES HERE for CodeMirror */
-.code-editor { /* This is the outer NiceGUI wrapper for CodeMirror */
+.code-editor {
     font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 16px;
     line-height: 1.5;
-    background-color: var(--input-bg) !important; /* Set editor background */
+    background-color: var(--input-bg) !important;
     color: var(--text-primary) !important;
     min-height: 100px !important;
     height: auto !important;
     resize: none;
-    /* No border on .code-editor itself, it's just a wrapper */
 }
 
-
-
-.cm-editor { /* This is the actual CodeMirror root element */
+.cm-editor {
     min-height: 100px !important;
     height: auto !important;
     border: none !important; 
@@ -486,18 +548,16 @@ body {
     padding: 0 !important; 
 }
 
-/* Specific dark mode adjustments for elements inside CodeMirror */
 .dark-mode .cm-editor { 
     background-color: var(--input-bg); 
     color: var(--text-primary); 
-    /* border-color was here, but `border: none !important;` above will remove it */
 }
 
 .dark-mode .cm-gutters { 
     background-color: var(--bg-tertiary); 
     color: var(--text-secondary); 
     border-right: 1px solid var(--border-color); 
-    border-bottom-left-radius: 16px; /* <--- Add this for gutter rounding */
+    border-bottom-left-radius: 16px;
 }
 
 .dark-mode .cm-content { 
@@ -552,7 +612,7 @@ body {
     position: absolute;
     left: -50px;
     top: 8px;
-    width: 40px;
+    width: 26px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -579,20 +639,20 @@ body {
 }
 
 .drawer-button-hover-effect {
-    transition: all 0.2s ease; /* Smooth transition for scale and shadow */
+    transition: all 0.2s ease;
 }
 
 .drawer-button-hover-effect:hover {
-    transform: scale(1.1); /* Expands to 110% on hover */
+    transform: scale(1.1);
 }
 
 .browse-wd-button-hover-effect {
-    transition: all 0.2s ease; /* Smooth transition */
+    transition: all 0.2s ease;
 }
 
 .browse-wd-button-hover-effect:hover {
-    transform: scale(1.1); /* Expands on hover */
-    box-shadow: 0 4px 12px rgba(0,0,0,0.25); /* Adds a larger shadow */
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
 }
 
 .gutter-execution-status {
@@ -619,7 +679,7 @@ body {
 .gutter-timer-text {
     font-family: monospace;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .file-explorer-header { 
@@ -658,20 +718,22 @@ body {
 .dark-mode .q-drawer {
     background-color: var(--bg-primary) !important;
     border-right: 1px solid var(--border-color) !important;
+    border-left: 1px solid var(--border-color) !important;
     color: var(--text-primary) !important;
 }
+
 
 .dark-mode .q-tree {
     color: var(--text-primary) !important;
 }
 
 .dark-mode .q-tree .q-tree__node-header-content > div {
-    color: var(--text-primary) !important; /* General rule for text */
+    color: var(--text-primary) !important;
 }
 
 .dark-mode .q-tree .q-tree__arrow,
 .dark-mode .q-tree .q-tree__icon {
-    color: var(--text-primary) !important; /* General rule for icons */
+    color: var(--text-primary) !important;
 }
 
 .dark-mode .q-tree__node:before,
@@ -686,7 +748,7 @@ body {
 .dark-mode .q-tree .q-tree__node-header:hover .dnb-file-node .q-icon,
 .dark-mode .q-tree .q-tree__node-header:hover .dnb-file-node .q-tree__node-header-content > div,
 .dark-mode .q-tree .q-tree__node-header:hover .q-tree__arrow {
-    color: #ff8c00 !important; /* Darker orange on hover */
+    color: #ff8c00 !important;
 }
 
 .q-drawer .nicegui-column {
@@ -696,13 +758,14 @@ body {
 .notebook-controls {
     display: flex;
     gap: 8px;
+    align-items: center;
 }
 
 .save-load-button {
     font-size: 12px !important;
-    padding: 2px 2px 1px 1px !important;
-    min-height: 24px !important;
-    height: 24px !important;
+    padding: 3px 1px 1px 1px !important;
+    min-height: 25px !important;
+    height: 25px !important;
     min-width: 55px !important;
     width:55px !important;
     border-radius: 16px !important;
@@ -716,11 +779,11 @@ body {
 
 .connect-button {
     font-size: 12px !important;
-    padding: 2px 2px 1px 1px !important;
-    min-height: 24px !important;
-    height: 24px !important;
-    min-width: 80px !important;
-    width:80px !important;
+    padding: 3px 1px 1px 1px !important;
+    min-height: 25px !important;
+    height: 25px !important;
+    min-width: 78px !important;
+    width:78px !important;
     border-radius: 16px !important;
     transition: all 0.3s ease;
 }
@@ -746,25 +809,20 @@ body {
     box-shadow: 0 4px 12px rgba(0,0,0,0.25);
 }
 
-/* MODIFICATION START */
-/* Custom CSS for .dnb files */
 .dnb-file-node .q-icon,
 .dnb-file-node .q-tree__node-header-content > div {
     color: orange !important;
 }
 
-/* Ensure color applies in dark mode too */
 .dark-mode .dnb-file-node .q-icon,
 .dark-mode .dnb-file-node .q-tree__node-header-content > div {
     color: orange !important;
 }
 
-/* Hover state for .dnb files */
 .q-tree__node-header:hover .dnb-file-node .q-icon,
 .q-tree__node-header:hover .dnb-file-node .q-tree__node-header-content > div {
-    color: #ff8c00 !important; /* Darker orange on hover */
+    color: #ff8c00 !important;
 }
-/* MODIFICATION END */
 
 </style>
 
@@ -777,22 +835,17 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('keydown', function(e) {
         // Ctrl+Enter: Run Cell
         if (e.ctrlKey && e.key === 'Enter') {
-            e.preventDefault(); // Prevent default browser behavior (e.g., newline in textarea)
-            e.stopPropagation(); // Stop event bubbling
+            e.preventDefault(); 
+            e.stopPropagation(); 
             
             console.log('Ctrl+Enter detected!');
             
-            // Find the currently focused CodeMirror editor
             const focused = document.activeElement.closest('.cm-editor');
             if (focused) {
                 console.log('Found focused editor');
-                
-                // Find the parent cell container
                 const cell = focused.closest('.code-cell');
                 if (cell) {
                     console.log('Found parent cell');
-                    
-                    // Find and click the run button in this cell
                     const runBtn = cell.querySelector('.gutter-run-button');
                     if (runBtn) {
                         console.log('Clicking run button...');
@@ -805,14 +858,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.log('No CodeMirror editor focused for Ctrl+Enter.');
             }
         } 
-        // Shift+Enter: Run Cell (MODIFIED: removed "and Add New Cell")
+        // Shift+Enter: Run Cell
         else if (e.shiftKey && e.key === 'Enter') {
             const focused = document.activeElement.closest('.cm-editor');
             if (focused) {
-                e.preventDefault(); // Prevent default browser behavior
-                e.stopPropagation(); // Stop event bubbling
+                e.preventDefault(); 
+                e.stopPropagation(); 
                 
-                console.log('Shift+Enter detected - running cell'); // Updated log message
+                console.log('Shift+Enter detected - running cell');
                 
                 const cell = focused.closest('.code-cell');
                 if (cell) {
@@ -823,10 +876,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }
         }
-        // NEW: Ctrl+Down Arrow: Add new cell
+        // Ctrl+Down Arrow: Add new cell
         else if (e.ctrlKey && e.key === 'ArrowDown') {
-            e.preventDefault(); // Prevent default browser behavior (e.g., scrolling)
-            e.stopPropagation(); // Stop event bubbling
+            e.preventDefault(); 
+            e.stopPropagation(); 
             
             console.log('Ctrl+Down Arrow detected!');
             
@@ -950,11 +1003,6 @@ observer.observe(document.body, { childList: true, subtree: true });
 """
 
 def create_file_tree(path: Path = Path('.'), max_depth=3, current_depth=0) -> Tuple[List[Dict], List[Tuple[str, bool, float]]]:
-    """
-    Create a tree structure for file explorer and a snapshot of the directory state.
-    Path should be a Path object.
-    Returns (tree_data, state_snapshot).
-    """
     tree_data: List[Dict] = []
     state_snapshot: List[Tuple[str, bool, float]] = [] 
 
@@ -968,7 +1016,7 @@ def create_file_tree(path: Path = Path('.'), max_depth=3, current_depth=0) -> Tu
 
         items_to_process = []
         for item in path.iterdir():
-            if item.name.startswith('.'): # Skip hidden files/directories
+            if item.name.startswith('.'): 
                 continue
             try:
                 items_to_process.append(item)
@@ -1004,9 +1052,8 @@ def create_file_tree(path: Path = Path('.'), max_depth=3, current_depth=0) -> Tu
     return tree_data, state_snapshot
 
 def get_file_icon(file_extension):
-    """Return appropriate icon for file type"""
     icons = {
-        '.py': 'code', '.sql': 'storage', '.csv': 'table_view', '.xlsx': 'table_view',
+        '.py': 'code', '.sql': 'storage', '.csv': 'grid_on', '.xlsx': 'table_view',
         '.xls': 'table_view', '.json': 'data_object', '.txt': 'description', '.md': 'article',
         '.html': 'web', '.css': 'palette', '.js': 'javascript', '.pdf': 'picture_as_pdf',
         '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image',
@@ -1032,8 +1079,7 @@ class NotebookApp:
         self.working_directory: Path = self.user_data_path.resolve()
         self.current_filename = None
         self.is_modified = False
-        self.last_tree_state: Optional[List[Tuple[str, bool, float]]] = None 
-        # REMOVED: self.show_all_rows_for_df is now per-cell
+        self.last_tree_state: Optional[List[Tuple[str, bool, float]]] = None
 
     def generate_cell_id(self):
         return str(uuid.uuid4())[:8]
@@ -1041,12 +1087,9 @@ class NotebookApp:
     def save_credentials(self, config: Dict[str, Any]):
         try:
             self.credentials_file.parent.mkdir(parents=True, exist_ok=True)
-            safe_config = config.copy()
-            safe_config['password_saved'] = bool(config.get('db_password'))
-            if 'db_password' in safe_config:
-                del safe_config['db_password']
+            # Retain password for saving
             with open(self.credentials_file, 'w') as f:
-                json.dump(safe_config, f, indent=2)
+                json.dump(config, f, indent=2)
             return True
         except Exception as e:
             logger.error(f"Failed to save credentials: {e}", exc_info=True)
@@ -1070,7 +1113,6 @@ class NotebookApp:
         self.connection_config = config
         if self.db_connection:
             try:
-                # Wrap close() in asyncio.to_thread
                 await asyncio.to_thread(self.db_connection.close)
             except Exception:
                 pass
@@ -1078,7 +1120,6 @@ class NotebookApp:
                 self.db_connection = None
         if self.ssh_tunnel:
             try:
-                # Wrap stop() in asyncio.to_thread
                 await asyncio.to_thread(self.ssh_tunnel.stop)
             except Exception:
                 pass
@@ -1096,11 +1137,9 @@ class NotebookApp:
                     remote_bind_address=(config['db_host'], int(config['db_port'])),
                     local_bind_address=('localhost', 6543))
                 
-                # Wrap start() in asyncio.to_thread
                 await asyncio.to_thread(self.ssh_tunnel.start)
                 
                 logger.info("Connecting to database through SSH tunnel...")
-                # Wrap psycopg2.connect() in asyncio.to_thread
                 self.db_connection = await asyncio.to_thread(
                     psycopg2.connect,
                     host=self.ssh_tunnel.local_bind_host,
@@ -1111,7 +1150,6 @@ class NotebookApp:
                 logger.info("Database connection established via SSH tunnel")
             else:
                 logger.info("No SSH configuration provided. Connecting directly to database...")
-                # Wrap psycopg2.connect() in asyncio.to_thread
                 self.db_connection = await asyncio.to_thread(
                     psycopg2.connect,
                     host=config['db_host'],
@@ -1128,50 +1166,31 @@ class NotebookApp:
             logger.error(f"Connection error: {e}", exc_info=True)
             if self.ssh_tunnel and hasattr(self.ssh_tunnel, 'is_active') and self.ssh_tunnel.is_active:
                 try:
-                    # Wrap stop() in asyncio.to_thread
                     await asyncio.to_thread(self.ssh_tunnel.stop)
                 except Exception:
                     pass
             self.ssh_tunnel = None
             if self.db_connection:
                 try:
-                    # Wrap close() in asyncio.to_thread
                     await asyncio.to_thread(self.db_connection.close)
                 except Exception:
                     pass
                 self.db_connection = None
             return False, str(e)
 
-    async def execute_sql(self, query: str, save_to_df: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
-        if not self.db_connection:
-            return None, "Not connected to database", None
-        try:
-            df = await asyncio.to_thread(pd.read_sql_query, query, self.db_connection)
-            if save_to_df:
-                self.dataframes[save_to_df] = df
-                self.python_globals[save_to_df] = df
-                return df, f"Query successful. DataFrame saved as '{save_to_df}'.", save_to_df
-            return df, "Query successful.", None
-        except Exception as e:
-            logger.error(f"Query execution error: {e}", exc_info=True)
-            return None, str(e), None
-
     def mark_modified(self):
-        """Mark the notebook as modified"""
         self.is_modified = True
         if hasattr(self, 'title_label'):
             filename = self.current_filename or "Untitled"
             self.title_label.text = f"{filename}*"
 
     def mark_saved(self):
-        """Mark the notebook as saved"""
         self.is_modified = False
         if hasattr(self, 'title_label'):
             filename = self.current_filename or "Untitled"
             self.title_label.text = f"{filename}"
 
     def serialize_notebook(self) -> Dict[str, Any]:
-        """Serialize the current notebook state to a dictionary"""
         notebook_data = {
             'version': '1.0',
             'created_at': datetime.now().isoformat(),
@@ -1181,8 +1200,9 @@ class NotebookApp:
             'connection_config': self.last_successful_config.copy() if self.last_successful_config else {}
         }
         
-        if 'db_password' in notebook_data['connection_config']:
-            del notebook_data['connection_config']['db_password']
+        # Keep password in connection_config when saving notebook
+        # if 'db_password' in notebook_data['connection_config']:
+        #     del notebook_data['connection_config']['db_password']
         
         for cell_data in self.cells:
             cell_info = {
@@ -1191,14 +1211,13 @@ class NotebookApp:
                 'code': cell_data['code'].value,
                 'df_name': cell_data['df_name'].value,
                 'is_collapsed': cell_data['is_collapsed'](),
-                'show_all_rows': cell_data['show_all_rows'] # NEW: Save per-cell switch state
+                'show_all_rows': cell_data['show_all_rows']
             }
             notebook_data['cells'].append(cell_info)
         
         return notebook_data
 
     def save_notebook(self, filepath: str) -> bool:
-        """Save the notebook to a file"""
         try:
             notebook_data = self.serialize_notebook()
             
@@ -1218,7 +1237,6 @@ class NotebookApp:
             return False
 
     async def load_notebook(self, filepath: str) -> bool:
-        """Load a notebook from a file"""
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 notebook_data = json.load(f)
@@ -1238,16 +1256,14 @@ class NotebookApp:
                     logger.warning(f"Could not restore working directory: {e}")
             
             if 'is_dark_mode' in notebook_data:
-                target_dark_mode = notebook.is_dark_mode # Current UI mode
-                if target_dark_mode != notebook_data['is_dark_mode']: # Desired mode
-                    toggle_dark_mode() # Call function to change UI and app state
+                target_dark_mode = notebook.is_dark_mode 
+                if target_dark_mode != notebook_data['is_dark_mode']: 
+                    toggle_dark_mode() 
 
             if 'connection_config' in notebook_data and notebook_data['connection_config']:
                 self.last_successful_config = notebook_data['connection_config'].copy()
             
             for cell_info in notebook_data['cells']:
-                # Pass the 'show_all_rows' state from the loaded data
-                # Default to False if the key is missing (for older notebook files)
                 await add_cell(cell_info['type'].lower(), initial_show_all_rows=cell_info.get('show_all_rows', False))
                 
                 if self.cells:
@@ -1268,7 +1284,6 @@ class NotebookApp:
             return False
 
     async def clear_all_cells(self):
-        """Clear all cells from the notebook"""
         for cell_data in self.cells[:]:
             cell_data['container'].delete()
         
@@ -1277,13 +1292,12 @@ class NotebookApp:
         self.python_globals.clear()
 
     async def new_notebook(self):
-        """Create a new notebook (clear current state)"""
         await self.clear_all_cells()
         self.current_filename = None
         self.mark_saved()
         await add_cell('sql')
 
-    async def execute_python(self, code: str, show_all_rows_in_cell: bool) -> Tuple[bool, str, str]: # MODIFIED: Added show_all_rows_in_cell
+    async def execute_python(self, code: str, show_all_rows_in_cell: bool) -> Tuple[bool, str, str, Optional[pd.DataFrame]]:
         old_stdout = sys.stdout
         sys.stdout = captured_output = StringIO()
 
@@ -1291,7 +1305,8 @@ class NotebookApp:
         
         output_type = 'text/plain' 
         final_result_representation_parts = []
-        figure_explicitly_handled = False 
+        figure_explicitly_handled = False
+        last_displayed_or_returned_df: Optional[pd.DataFrame] = None 
 
         try:
             user_working_dir = self.working_directory.resolve()
@@ -1307,20 +1322,26 @@ class NotebookApp:
             exec_globals = {'pd': pd, 'np': np, 'asyncio': asyncio, 'plt': plt, **self.python_globals}
 
             def custom_display_func(obj):
-                nonlocal final_result_representation_parts, output_type, figure_explicitly_handled
+                nonlocal final_result_representation_parts, output_type, figure_explicitly_handled, last_displayed_or_returned_df
                 if isinstance(obj, pd.DataFrame):
-                    # MODIFIED: Use the passed show_all_rows_in_cell for max_rows
-                    max_rows_to_display = None if show_all_rows_in_cell else 20 
+                    if show_all_rows_in_cell:
+                        max_rows_to_display = 200 
+                    else:
+                        max_rows_to_display = 20 
+                    
                     html_table = obj.to_html(classes='dataframe', border=0, max_rows=max_rows_to_display, escape=False)
                     
                     message_suffix = ""
-                    if len(obj) > 20 and not show_all_rows_in_cell:
-                        message_suffix = f"<p>*Showing first 20 of {len(obj)} rows. To see all rows, toggle 'Show all rows' in this cell's header.*</p>"
-                    elif show_all_rows_in_cell and len(obj) > 20:
+                    if not show_all_rows_in_cell and len(obj) > 20:
+                        message_suffix = f"<p>*Showing first 20 of {len(obj)} rows. To see 200 rows, toggle 'Show all rows' in this cell's header.*</p>"
+                    elif show_all_rows_in_cell and len(obj) > 200: 
+                        message_suffix = f"<p>*Showing first 200 of {len(obj)} rows due to display limit. Full DataFrame is available in memory.*</p>"
+                    elif show_all_rows_in_cell and len(obj) > 20: 
                         message_suffix = f"<p>*Showing all {len(obj)} rows.*</p>"
                     
                     final_result_representation_parts.append(f"{html_table}{message_suffix}")
                     output_type = 'text/html'
+                    last_displayed_or_returned_df = obj # Capture DataFrame
 
                 elif isinstance(obj, matplotlib.figure.Figure): 
                     buffer = io.BytesIO()
@@ -1333,12 +1354,14 @@ class NotebookApp:
                     )
                     output_type = 'text/html' 
                     plt.close(obj) 
-                    figure_explicitly_handled = True 
+                    figure_explicitly_handled = True
+                    last_displayed_or_returned_df = None # Clear if a figure is displayed
 
                 elif obj is not None: 
                     final_result_representation_parts.append(repr(obj))
                     if output_type != 'text/html':
                          output_type = 'text/plain'
+                    last_displayed_or_returned_df = None # Clear for other types
 
             exec_globals['display'] = custom_display_func
 
@@ -1362,7 +1385,7 @@ class NotebookApp:
             if plt.get_fignums() and not figure_explicitly_handled:
                 for fig_num in plt.get_fignums():
                     fig = plt.figure(fig_num) 
-                    custom_display_func(fig) 
+                    custom_display_func(fig) # This will clear last_displayed_or_returned_df
 
             if not final_result_representation_parts and code.strip():
                 lines = code.strip().split('\n')
@@ -1377,6 +1400,8 @@ class NotebookApp:
                     if is_simple_expression:
                         try:
                             evaluated_result = eval(last_line, exec_globals)
+                            # If the result is a DataFrame, custom_display_func will capture it
+                            # in last_displayed_or_returned_df.
                             custom_display_func(evaluated_result)
                         except Exception: 
                             pass 
@@ -1399,14 +1424,14 @@ class NotebookApp:
                 output_type = 'text/plain'
             
             self.mark_modified()
-            return True, combined_output, output_type
+            return True, combined_output, output_type, last_displayed_or_returned_df
 
         except Exception as e:
             error_message = f"Error: {str(e)}\n{traceback.format_exc()}"
             std_out_content = captured_output.getvalue()
             if std_out_content: 
                 error_message = f"{std_out_content}\n{error_message}"
-            return False, error_message, 'text/plain'
+            return False, error_message, 'text/plain', None
         finally:
             sys.stdout = old_stdout
             os.chdir(application_process_cwd)
@@ -1416,8 +1441,8 @@ class NotebookApp:
 notebook = NotebookApp()
 ui.add_head_html(custom_css)
 
-# Global UI component variables
 left_drawer_instance: Optional[ui.left_drawer] = None
+right_drawer_instance: Optional[ui.right_drawer] = None
 file_tree: Optional[ui.tree] = None
 tree_container: Optional[ui.scroll_area] = None
 cell_container: Optional[ui.column] = None
@@ -1431,10 +1456,9 @@ working_dir_display: Optional[ui.label] = None
 
 
 async def pick_file_native(mode='save', file_types=None, initial_file: Optional[str] = None, initial_dir: Optional[str] = None) -> Optional[str]:
-    """Opens an OS-native file picker dialog for save or open"""
     if not TKINTER_AVAILABLE:
         logger.error("tkinter is not available for native file picker.")
-        ui.notify("Native file picker is not available (tkinter module missing).", type='warning') # Notify user
+        ui.notify("Native file picker is not available (tkinter module missing).", type='warning')
         return None
 
     if file_types is None:
@@ -1482,7 +1506,7 @@ async def pick_file_native(mode='save', file_types=None, initial_file: Optional[
                 filetypes=file_types,
                 defaultextension=_derived_defaultextension 
             )
-        else: # mode == 'open'
+        else: 
             _title = "Open File" 
             if file_types and isinstance(file_types, list) and len(file_types) > 0:
                  first_file_type_label = file_types[0][0]
@@ -1507,7 +1531,6 @@ async def pick_file_native(mode='save', file_types=None, initial_file: Optional[
         return None
 
 async def handle_save_notebook():
-    """Handle saving the notebook"""
     if not TKINTER_AVAILABLE:
         ui.notify("Native file picker is not available (tkinter module missing).", type='warning')
         return
@@ -1522,7 +1545,6 @@ async def handle_save_notebook():
             ui.notify("Failed to save notebook", type='negative')
 
 async def handle_load_notebook():
-    """Handle loading a notebook"""
     if notebook.is_modified:
         with ui.dialog() as confirm_dialog:
             with ui.card():
@@ -1538,7 +1560,6 @@ async def handle_load_notebook():
         await _do_load_notebook()
 
 async def _do_load_notebook():
-    """Actually perform the notebook loading"""
     filepath = await pick_file_native(mode='open', file_types=[("Data Notebook", "*.dnb"), ("All Files", "*.*")])
     if filepath:
         success = await notebook.load_notebook(filepath)
@@ -1548,7 +1569,6 @@ async def _do_load_notebook():
             ui.notify("Failed to load notebook", type='negative')
 
 async def handle_new_notebook():
-    """Handle creating a new notebook"""
     if notebook.is_modified:
         with ui.dialog() as confirm_dialog:
             with ui.card():
@@ -1566,8 +1586,6 @@ async def handle_new_notebook():
         ui.notify("New notebook created", type='positive')
 
 async def save_cell_code(cell_data: Dict[str, Any]):
-    """Saves the code of a specific cell to a file in the working directory."""
-    
     code_content = cell_data['code'].value
     cell_type = cell_data['type'].value.lower() 
     
@@ -1609,9 +1627,56 @@ async def save_cell_code(cell_data: Dict[str, Any]):
         logger.error(f"Failed to save cell code to {actual_filepath}: {e}", exc_info=True)
         ui.notify(f"Failed to save cell code: {e}", type='negative')
 
+async def handle_download_csv(cell_data: Dict[str, Any]):
+    """Handles downloading the DataFrame from a cell as CSV."""
+    df_to_download = cell_data.get('df_to_download')
+    cell_id = cell_data['id']
+    cell_type_value = cell_data['type'].value # 'SQL' or 'Python'
+
+    if df_to_download is None or not isinstance(df_to_download, pd.DataFrame):
+        ui.notify("No DataFrame available to download for this cell.", type='warning')
+        return
+
+    base_filename_stem = "table_export"
+    if cell_type_value == 'SQL':
+        df_name_from_input = cell_data['df_name'].value.strip()
+        base_filename_stem = df_name_from_input if df_name_from_input else f"sql_result_{cell_id}"
+    elif cell_type_value == 'Python':
+        py_df_var_name = None
+        for name, var_instance in notebook.python_globals.items():
+            if var_instance is df_to_download: 
+                py_df_var_name = name
+                break
+        if py_df_var_name:
+            base_filename_stem = py_df_var_name
+        else:
+            base_filename_stem = f"python_output_{cell_id}"
+
+    valid_chars = "-_.() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    clean_filename_stem = ''.join(c for c in base_filename_stem if c in valid_chars)
+    clean_filename_stem = clean_filename_stem.replace(' ', '_') 
+    if not clean_filename_stem: 
+        clean_filename_stem = f"exported_data_{cell_id}"
+
+    filename = f"{clean_filename_stem}.csv"
+    filepath = notebook.working_directory / filename
+
+    counter = 1
+    while filepath.exists():
+        filename = f"{clean_filename_stem}_{counter}.csv"
+        filepath = notebook.working_directory / filename
+        counter += 1
+
+    try:
+        await asyncio.to_thread(df_to_download.to_csv, filepath, index=False)
+        ui.notify(f"Table saved as '{filename}' in working directory.", type='positive')
+        await refresh_file_tree_ui()
+    except Exception as e:
+        logger.error(f"Failed to save DataFrame as CSV to {filepath}: {e}", exc_info=True)
+        ui.notify(f"Failed to save CSV: {e}", type='negative')
+
 
 async def refresh_file_tree_ui():
-    """Refreshes the file tree in the UI if changes are detected."""
     global file_tree, tree_container
     
     if not file_tree or not tree_container:
@@ -1645,7 +1710,6 @@ async def refresh_file_tree_ui():
         ui.run_javascript('colorizeDnbFiles()')
 
 async def pick_directory_native() -> Optional[str]:
-    """Opens an OS-native directory picker dialog."""
     if not TKINTER_AVAILABLE:
         logger.error("tkinter is not available for native directory picker.")
         return None
@@ -1670,7 +1734,6 @@ async def pick_directory_native() -> Optional[str]:
         return None
 
 async def handle_browse_working_directory():
-    """Handles the click on the 'browse for working directory' button."""
     if not TKINTER_AVAILABLE:
         ui.notify("Native directory picker is not available (tkinter module missing or failed to import).", type='warning')
         return
@@ -1724,7 +1787,6 @@ async def update_working_directory_and_tree(new_path_str: str):
     await refresh_file_tree_ui() 
 
 async def load_notebook_from_path(filepath: str):
-    """Load a notebook from a specific file path"""
     if notebook.is_modified:
         with ui.dialog() as confirm_dialog:
             with ui.card():
@@ -1747,48 +1809,40 @@ async def load_notebook_from_path(filepath: str):
         else:
             ui.notify("Failed to load notebook", type='negative')
 
-# MODIFIED: Added initial_show_all_rows parameter
 async def add_cell(cell_type='sql', initial_show_all_rows=False):
     cell_id = notebook.generate_cell_id()
     
-    # Create the cell_data dictionary early to hold the switch state and other cell properties
     cell_data_dict = {
         'id': cell_id,
-        'show_all_rows': initial_show_all_rows, # Initialize the state here
-        'type': None, # Placeholder, will be updated
-        'code': None, # Placeholder
-        'output': None, # Placeholder
-        'df_name': None, # Placeholder
-        'container': None, # Placeholder
-        'execution_status': None, # Placeholder
-        'timer_label': None, # Placeholder
-        'spinner': None, # Placeholder
-        'execution_result': None, # Placeholder
-        'result_icon': None, # Placeholder
-        'result_time': None, # Placeholder
-        'is_collapsed': lambda: False, # Placeholder, updated later
-        'toggle_collapse': None # Placeholder
+        'show_all_rows': initial_show_all_rows,
+        'type': None, 'code': None, 'df_name': None, 'container': None,
+        'execution_status': None, 'timer_label': None, 'spinner': None,
+        'execution_result': None, 'result_icon': None, 'result_time': None,
+        'is_collapsed': lambda: False, 'toggle_collapse': None,
+        # NEW: For output and download button
+        'output_container': None, 
+        'output_area_markdown': None, 
+        'download_button_row': None,
+        'df_to_download': None 
     }
 
     with cell_container:
         cell_element = ui.column().classes('code-cell w-full cell-with-gutter')
-        is_collapsed = False # Closure variable for toggle_collapse
+        is_collapsed = False 
 
         with cell_element:
             with ui.row().classes('code-cell-header w-full'):
                 collapse_btn = ui.html('<button class="collapse-button"><span class="collapse-icon">🠉</span></button>')
                 initial_select_value = 'Python' if cell_type == 'python' else cell_type.upper()
                 cell_type_select = ui.select(options=['SQL', 'Python'], value=initial_select_value).classes('w-25 header-control-padding')
-                df_name_input = ui.input(placeholder='  Save to Dataframe :', value='').classes('w-29 header-control-padding')
+                df_name_input = ui.input(placeholder='Save to Dataframe', value='').style('width: 120px')
                 df_name_input.visible = cell_type.upper() == 'SQL'
                 
-                # NEW: Per-cell "Show all rows" switch
                 show_all_rows_switch = ui.switch('Show all rows', value=cell_data_dict['show_all_rows']) \
                                         .classes('text-sm mr-2').props('dense color=primary')
                 
-                # Use a regular on_value_change handler to update the dictionary
                 def on_show_all_rows_change(e):
-                    cell_data_dict['show_all_rows'] = e.value # Update the dictionary directly
+                    cell_data_dict['show_all_rows'] = e.value 
                     notebook.mark_modified()
                 show_all_rows_switch.on_value_change(on_show_all_rows_change)
 
@@ -1797,18 +1851,27 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                 
                 ui.space()
                 save_cell_btn = ui.button(icon='save_alt', color='primary').classes('save-button')
-                
                 delete_btn = ui.button('✖', color='red').classes('delete-button').props('round')
-                delete_btn.classes(remove='q-ml-auto') 
-                delete_btn 
 
             with ui.column().classes('code-cell-content w-full') as cell_content:
                 cm_language = cell_type.lower()
                 current_cm_theme = 'vscodeDark' if notebook.is_dark_mode else 'vscodeLight'
                 code_editor = ui.codemirror(value='', language=cm_language, theme=current_cm_theme).classes('w-full code-editor')
                 code_editor.props(f'data-cell-id="{cell_id}"')
-                output_area = ui.markdown('').classes('output-area w-full')
-                output_area.visible = False
+                
+                # Output area structure
+                output_container_el = ui.column().classes('output-container w-full')
+                output_container_el.visible = False # Initially hidden
+                with output_container_el:
+                    output_area_markdown_el = ui.markdown('').classes('output-area-content w-full')
+                    download_button_row_el = ui.row().classes('w-full justify-start pl-2 pb-1 pt-0') # Reduced padding
+                    with download_button_row_el:
+                        # The lambda now calls the globally defined handle_download_csv
+                        download_csv_button = ui.button('Download Table as CSV', icon='download',
+                                                        on_click=lambda: asyncio.create_task(handle_download_csv(cell_data_dict))) \
+                                                .props('dense flat color=primary text-color=primary') \
+                                                .style('font-size: 0.75rem; padding: 2px 6px;') # Smaller font and padding
+                    download_button_row_el.visible = False
 
             with ui.column().classes('cell-gutter') as cell_gutter:
                 run_btn = ui.button('▶', color='primary').classes('gutter-run-button')
@@ -1827,14 +1890,19 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                 toggle_collapse()
             code = code_editor.value
             cell_type_val = cell_type_select.value
-            
-            # Get the current state of this cell's "show all rows" switch from cell_data_dict
-            current_show_all_rows = cell_data_dict['show_all_rows'] 
+            current_show_all_rows = cell_data_dict['show_all_rows']
+
+            # Reset output state for the cell before running
+            cell_data_dict['output_container'].visible = False
+            cell_data_dict['download_button_row'].visible = False
+            cell_data_dict['df_to_download'] = None
+            cell_data_dict['output_area_markdown'].set_content('')
+
 
             logger.info(f"[{cell_id}] Run: {cell_type_val}, Code: {code[:50]!r}, Show All Rows: {current_show_all_rows}")
             if not code.strip():
-                output_area.set_content('No code to execute.')
-                output_area.visible = True
+                cell_data_dict['output_area_markdown'].set_content('No code to execute.')
+                cell_data_dict['output_container'].visible = True
                 return
 
             execution_status.visible = True
@@ -1845,13 +1913,14 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
             
             def update_timer():
                 if timer_active: 
-                    timer_label.text = f'{int(time.time() - start_time)}s'
+                    elapsed_time = time.time() - start_time
+                    timer_label.text = f'{elapsed_time:.1f}s'
             timer = ui.timer(0.1, update_timer)
             run_btn.disable()
 
             try:
-                output_area.set_content('Running...')
-                output_area.visible = True
+                cell_data_dict['output_area_markdown'].set_content('Running...')
+                cell_data_dict['output_container'].visible = True # Show "Running..."
                 await asyncio.sleep(0.1)
 
                 if cell_type_val == 'SQL':
@@ -1859,36 +1928,43 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                     result_df, message, saved_name = await notebook.execute_sql(code, df_name or None)
                     if result_df is not None:
                         execution_success = True
-                        
-                        max_rows_to_display = None if current_show_all_rows else 20
+                        if current_show_all_rows: max_rows_to_display = 200
+                        else: max_rows_to_display = 20
                         
                         output_text = f"Shape: {result_df.shape}\n\n{result_df.to_html(classes='dataframe', border=0, max_rows=max_rows_to_display, escape=False)}"
                         
-                        if len(result_df) > 20 and not current_show_all_rows:
-                            output_text += f"\n\n*Showing first 20 of {len(result_df)} rows. To see all rows, toggle 'Show all rows' in this cell's header.*"
+                        if not current_show_all_rows and len(result_df) > 20:
+                            output_text += f"\n\n*Showing first 20 of {len(result_df)} rows. To see 200 rows, toggle 'Show all rows' in this cell's header.*"
+                        elif current_show_all_rows and len(result_df) > 200:
+                            output_text += f"\n\n*Showing first 200 of {len(result_df)} rows due to display limit. Full DataFrame is available in memory.*"
                         elif current_show_all_rows and len(result_df) > 20:
                             output_text += f"\n\n*Showing all {len(result_df)} rows.*"
                         
-                        output_area.set_content(output_text)
+                        cell_data_dict['output_area_markdown'].set_content(output_text)
+                        cell_data_dict['df_to_download'] = result_df # Store DF for download
+                        cell_data_dict['download_button_row'].visible = True # Show download button
                         notebook.mark_modified()
                     else:
                         execution_success = False
-                        output_area.set_content(f"**SQL Error:** {message}")
+                        cell_data_dict['output_area_markdown'].set_content(f"**SQL Error:** {message}")
                         ui.notify(f"Cell {cell_id}: SQL error.", type='negative')
 
                 elif cell_type_val == 'Python':
-                    success, py_output, py_output_type = await notebook.execute_python(code, current_show_all_rows) 
+                    success, py_output, py_output_type, last_df = await notebook.execute_python(code, current_show_all_rows) 
                     execution_success = success
                     if success:
-                        output_area.set_content(py_output if py_output_type == 'text/html' else f"```\n{py_output}\n```")
+                        cell_data_dict['output_area_markdown'].set_content(py_output if py_output_type == 'text/html' else f"```\n{py_output}\n```")
+                        if isinstance(last_df, pd.DataFrame):
+                            cell_data_dict['df_to_download'] = last_df # Store DF for download
+                            cell_data_dict['download_button_row'].visible = True # Show download button
                     else:
-                        output_area.set_content(f"**Python Error:**\n```\n{py_output}\n```")
+                        cell_data_dict['output_area_markdown'].set_content(f"**Python Error:**\n```\n{py_output}\n```")
                         ui.notify(f"Cell {cell_id}: Python error.", type='negative')
 
             except Exception as e:
                 execution_success = False
                 logger.error(f"[{cell_id}] run_cell error: {e}", exc_info=True)
-                output_area.set_content(f"**Unexpected Error:** {str(e)}\n{traceback.format_exc()}")
+                cell_data_dict['output_area_markdown'].set_content(f"**Unexpected Error:** {str(e)}\n{traceback.format_exc()}")
                 ui.notify(f"Cell {cell_id}: Unexpected error.", type='error')
 
             finally:
@@ -1902,7 +1978,13 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                                     remove='result-error' if execution_success else 'result-success')
                 result_time.text = f'{final_time:.2f}s' if final_time < 1 else f'{final_time:.1f}s'
                 run_btn.enable()
-            logger.info(f"[{cell_id}] End run_cell. Output visible: {output_area.visible}")
+                # Ensure output container is visible if there's content
+                if cell_data_dict['output_area_markdown'].content or cell_data_dict['output_area_markdown']._props.get('innerHTML'):
+                    cell_data_dict['output_container'].visible = True
+                else: # Should not happen if logic above is correct
+                    cell_data_dict['output_container'].visible = False
+            logger.info(f"[{cell_id}] End run_cell. Output container visible: {cell_data_dict['output_container'].visible}")
+
 
         def toggle_collapse():
             nonlocal is_collapsed
@@ -1917,9 +1999,8 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
                 cell_element.classes(remove='collapsed')
                 cell_preview.visible = False
         
-        # Update the toggle_collapse function reference in cell_data_dict
         cell_data_dict['toggle_collapse'] = toggle_collapse
-        cell_data_dict['is_collapsed'] = lambda: is_collapsed # Capture latest is_collapsed state
+        cell_data_dict['is_collapsed'] = lambda: is_collapsed
 
         collapse_btn.on('click', toggle_collapse)
 
@@ -1937,11 +2018,9 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
             notebook.mark_modified()
         df_name_input.on_value_change(on_df_name_change)
 
-    # Populate the remaining UI element references in cell_data_dict
     cell_data_dict.update({
         'type': cell_type_select, 
         'code': code_editor,
-        'output': output_area, 
         'df_name': df_name_input, 
         'container': cell_element,
         'execution_status': execution_status, 
@@ -1950,11 +2029,14 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
         'execution_result': execution_result, 
         'result_icon': result_icon, 
         'result_time': result_time,
+        'output_container': output_container_el,
+        'output_area_markdown': output_area_markdown_el,
+        'download_button_row': download_button_row_el,
     })
-    notebook.cells.append(cell_data_dict) # Append the complete dict to notebook.cells
+    notebook.cells.append(cell_data_dict)
 
     def delete_cell():
-        notebook.cells.remove(cell_data_dict) # Use the dictionary directly
+        notebook.cells.remove(cell_data_dict)
         cell_element.delete()
         notebook.mark_modified()
     
@@ -1966,16 +2048,13 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
         cell_container._add_cell_button.move(target_index=-1)
 
 async def add_cell_and_mark_modified(cell_type='sql'):
-    """Add a cell and mark notebook as modified"""
     await add_cell(cell_type)
     notebook.mark_modified()
 
 async def setup_keyboard_shortcuts():
-    """Setup keyboard shortcuts for save/load/new"""
     ui.keyboard(on_key=handle_keyboard_shortcut)
 
 def handle_keyboard_shortcut(event):
-    """Handle keyboard shortcuts (Python side)"""
     if event.action.keydown: 
         if event.modifiers.alt:
             if event.key.name == 's':
@@ -1989,7 +2068,6 @@ def handle_keyboard_shortcut(event):
                 left_drawer_instance.toggle()
                
 def toggle_dark_mode():
-    """Toggle dark mode"""
     notebook.is_dark_mode = not notebook.is_dark_mode
     if notebook.is_dark_mode:
         ui.query('body').classes(add='dark-mode')
@@ -2006,33 +2084,30 @@ def toggle_dark_mode():
     notebook.mark_modified()
 
 def get_last_n_path_parts(path, n=2):
-    """Get the last n parts of a file path"""
     parts = Path(path).parts
     if len(parts) <= n:
         return str(path)
     return str(Path(*parts[-n:]))
 
-# --- Main UI Layout ---
 main_container = ui.element('div').classes('w-full main-container')
 ui.query('body').classes(add='dark-mode')
 
 with main_container:
     with ui.column().classes('w-full h-full'):
-        # --- Toolbar ---
         with ui.row().classes('toolbar w-full'):
-            ui.button(on_click=lambda: left_drawer_instance.toggle(), icon='menu').props('flat round color=primary').classes('drawer-button-hover-effect').style('margin-left: -6px; margin-top: -6px;')
+            ui.button(on_click=lambda: left_drawer_instance.toggle(), icon='menu').props('flat round color=primary').classes('drawer-button-hover-effect').style('margin-left: -6px;')
             
             title_label = ui.label('Untitled').classes('text-2xl font-bold')
             notebook.title_label = title_label
+            for _ in range(6):
+                ui.row()
                 
-            with ui.row().classes('notebook-controls ml-20'):
-                dark_mode_btn = ui.button(icon='light_mode', on_click=toggle_dark_mode).props('flat round').style('margin-top: -6px;')
-                # REMOVED: Global "Show all rows" switch from toolbar
-                ui.button('New', on_click=handle_new_notebook).classes('save-load-button').tooltip('New Notebook (Alt+N)').style('margin-top: 3px;')
-                ui.button('Open', on_click=handle_load_notebook).classes('save-load-button').tooltip('Open Notebook (Alt+O)').style('margin-top: 3px;')
-                ui.button('Save', on_click=handle_save_notebook).classes('save-load-button').tooltip('Save Notebook (Alt+S)').style('margin-top: 3px;')
+            with ui.row().classes('notebook-controls ml-15'):
+                dark_mode_btn = ui.button(icon='light_mode', on_click=toggle_dark_mode).props('flat round')
+                ui.button('New', on_click=handle_new_notebook).classes('save-load-button').tooltip('New Notebook)')
+                ui.button('Open', on_click=handle_load_notebook).classes('save-load-button').tooltip('Open Notebook')
+                ui.button('Save', on_click=handle_save_notebook).classes('save-load-button').tooltip('Save Notebook (Alt+S)')
                 
-
             with ui.row().classes('connection-status'):
                 async def handle_reconnect():
                     if not notebook.last_successful_config: 
@@ -2040,49 +2115,61 @@ with main_container:
                         return
                     reconnect_btn.disable()
                     ui.notify('Reconnecting...', type='info')
-                    success, message = await notebook.connect_to_database(notebook.last_successful_config)
+                    # Make sure to pass the password back if it was saved
+                    reconnect_config = notebook.last_successful_config.copy()
+                    if 'db_password' not in reconnect_config:
+                        # Attempt to load from credentials file if not in last_successful_config
+                        # This handles cases where last_successful_config might have been stripped
+                        # but credentials were saved separately.
+                        loaded_creds = notebook.load_credentials()
+                        if loaded_creds.get('db_password'):
+                            reconnect_config['db_password'] = loaded_creds['db_password']
+
+                    success, message = await notebook.connect_to_database(reconnect_config)
                     status_indicator.content = f'<div class="status-indicator status_{"connected" if success else "disconnected"}"></div>'
                     status_label.text = "Connected" if success else "Disconnected"
                     ui.notify(f'Reconnection {"successful" if success else "failed"}: {message}', type='positive' if success else 'negative')
                     reconnect_btn.enable()
                 
                 reconnect_btn = ui.button(icon='refresh', on_click=handle_reconnect).props('flat round dense').tooltip('Reconnect')
-                reconnect_btn.visible = False
-                connect_btn = ui.button('Connect', on_click=lambda: connection_dialog.open()).classes('connect-button').tooltip('Configure DB Connection').style('margin-top: 3px;')
+                reconnect_btn.visible = False 
+                connect_btn = ui.button('Connect', on_click=lambda: connection_dialog.open()).classes('connect-button').tooltip('Configure DB Connection')
                 status_indicator = ui.html('<div class="status-indicator status-disconnected"></div>')
                 status_label = ui.label('Disconnected')
+
+            ui.button(icon='auto_awesome', on_click=lambda: right_drawer_instance.toggle()) \
+                .props('flat round color=orange').classes('drawer-button-hover-effect') \
+                .tooltip('Toggle AI Assistant')
 
         cell_container = ui.column().classes('w-full cell-container')
         with cell_container:
             cell_container._add_cell_button = ui.button('+ Add Cell', on_click=lambda: asyncio.create_task(add_cell_and_mark_modified('sql'))).classes('add-cell-button').props('id=add-cell-button')
 
-# --- Left Drawer for File Explorer ---
 with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
-        .props('width=250 bordered behavior=desktop') \
-        .classes('bg-[var(--bg-primary)]') as drawer:
+        .props('width=225 behavior=desktop') \
+        .classes('bg-[var(--bg-primary)]') \
+        .style('padding: 6px 0; margin: 0') as drawer:
     left_drawer_instance = drawer
 
     with ui.column().classes('w-full h-full no-wrap'):
-        with ui.row().classes('items-center w-full gap-2'):
+        with ui.row().classes('items-center w-full'):
             browse_wd_button = ui.button(icon='folder_open', on_click=handle_browse_working_directory) \
                 .classes('browse-wd-button-hover-effect') \
-                .style('width: 28px; height: 28px; font-size: 12px; flex-shrink: 0').props('round')
+                .style('width: 24px; height: 24px; font-size: 12px; flex-shrink: 0; margin-left: 8px; margin-top: 4px; margin-right: -9px;').props('round')
             
             if not TKINTER_AVAILABLE:
                 browse_wd_button.disable()
                 browse_wd_button.tooltip("Native directory picker unavailable (tkinter missing)")
             
             display_path = get_last_n_path_parts(str(notebook.working_directory), 2) 
-            working_dir_display = ui.label(display_path)
+            working_dir_display = ui.label(display_path).style('font-size: 14px; margin-top: 5px;')
             
-
-        # Section 2 
-        with ui.scroll_area().classes('col q-pl-sm file-tree-container').style('margin-left: -24px') as tc_instance:
+        with ui.scroll_area().classes('flex-grow min-h-0 w-full') as tc_instance:
             tree_container = tc_instance
             initial_tree_nodes, initial_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
             notebook.last_tree_state = initial_state_snapshot 
             
-            file_tree = ui.tree(initial_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full')
+            file_tree = ui.tree(initial_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full').style('margin-left: -10px; margin-top: -10px;')
 
             def on_tree_double_click(event):
                 if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
@@ -2099,7 +2186,17 @@ with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True
             
             ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
 
-# --- Connection Dialog ---
+with ui.right_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
+        .props('width=450') \
+        .classes('bg-[var(--bg-primary)]') as r_drawer:
+    right_drawer_instance = r_drawer
+    with ui.column().classes('w-full h-full no-wrap pa-0'):
+        ui.html(
+            f'<iframe src="https://aistudio.google.com/prompts/new_chat" '
+            f'style="width: 100%; height: 100%; border: none; display: block;"></iframe>'
+        ).classes('w-full h-full')
+
+
 with ui.dialog() as connection_dialog:
     with ui.card().classes('w-96'):
         saved_creds = notebook.load_credentials()
@@ -2108,7 +2205,8 @@ with ui.dialog() as connection_dialog:
         db_port = ui.input('Database Port', value=saved_creds.get('db_port', '5439'), placeholder='')
         db_name = ui.input('Database Name', value=saved_creds.get('db_name', ''), placeholder='')
         db_user = ui.input('Database User', value=saved_creds.get('db_user', ''), placeholder='')
-        db_password = ui.input('Database Password', placeholder='').props('type=password')
+        # Pre-fill password if available in saved credentials
+        db_password = ui.input('Database Password', value=saved_creds.get('db_password', ''), placeholder='').props('type=password')
         ui.separator().classes('my-4')
         with ui.expansion('SSH Configuration (Optional)', icon='vpn_key').classes('w-full'):
             ui.label('Configure SSH tunnel for secure database connections').classes('text-sm text-white-500 mb-2')
@@ -2116,7 +2214,10 @@ with ui.dialog() as connection_dialog:
             ssh_port = ui.input('SSH Port', value=saved_creds.get('ssh_port', '22'), placeholder='')
             ssh_username = ui.input('SSH Username', value=saved_creds.get('ssh_username', ''), placeholder='')
             ssh_key_path = ui.input('SSH Private Key Path', value=saved_creds.get('ssh_private_key', ''), placeholder='')
-        save_creds_checkbox = ui.checkbox('Save connection details (password excluded)', value=bool(saved_creds))
+        
+        # Modified checkbox label
+        save_creds_checkbox = ui.checkbox('Save connection details', value=bool(saved_creds.get('db_password')))
+        
         with ui.row().classes('w-full justify-end mt-4'):
             ui.button('Cancel', on_click=connection_dialog.close)
             async def connect_action():
@@ -2148,6 +2249,12 @@ with ui.dialog() as connection_dialog:
                     reconnect_btn.visible = True
                     if save_creds_checkbox.value: 
                         notebook.save_credentials(config)
+                    else:
+                        # If checkbox is unchecked, clear saved credentials
+                        if notebook.credentials_file.exists():
+                            notebook.credentials_file.unlink()
+                        ui.notify("Credentials not saved.", type='info')
+
                     connection_dialog.close()
                 else: 
                     ui.notify(f'Connection failed: {message}', type='negative')
@@ -2156,11 +2263,11 @@ with ui.dialog() as connection_dialog:
 async def initialize_app():
     await add_cell('sql')
     if notebook.cells and hasattr(notebook.cells[0]['code'], 'theme'):
-        notebook.cells[0]['code'].theme = 'vscodeDark'
+        notebook.cells[0]['code'].theme = 'vscodeDark' 
     
     await setup_keyboard_shortcuts()
     
-    ui.timer(0.5, refresh_file_tree_ui) 
+    ui.timer(0.5, refresh_file_tree_ui, once=False)
 
 ui.timer(0.1, initialize_app, once=True) 
 
@@ -2172,9 +2279,9 @@ if __name__ in {"__main__", "__mp_main__"}:
         title='Notebook', 
         port=8080, 
         native=False, 
-        reload=False, 
+        reload=False,
         show=True, 
         favicon='🔶', 
-        uvicorn_reload_dirs=None, 
+        uvicorn_reload_dirs=None,
         storage_secret="a_nice_secret_key_for_storage"
     )
