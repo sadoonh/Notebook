@@ -1147,7 +1147,7 @@ def create_file_tree(path: Path = Path('.'), max_depth=3, current_depth=0) -> Tu
 
 def get_file_icon(file_extension):
     icons = {
-        '.py': 'code', '.sql': 'storage', '.csv': 'grid_on', '.xlsx': 'table_view',
+        '.py': 'code', '.sql': 'storage', '.csv': 'view_list', '.xlsx': 'table_view',
         '.xls': 'table_view', '.json': 'data_object', '.txt': 'description', '.md': 'article',
         '.html': 'web', '.css': 'palette', '.js': 'javascript', '.pdf': 'picture_as_pdf',
         '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image',
