@@ -247,13 +247,103 @@ body {
 }
 
 
-.execution-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-left: 12px;
-    color: var(--text-secondary);
-    font-size: 14px;
+.q-tabs {
+    background-color: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
+    border-bottom: 1px solid var(--border-color) !important;
+}
+
+.q-tabs {
+    background-color: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
+    border-bottom: 1px solid var(--border-color) !important;
+}
+
+.q-tab {
+    color: var(--text-secondary) !important;
+    min-height: 36px !important;
+}
+
+.q-tab--active {
+    color: var(--text-primary) !important;
+}
+
+.q-tab__indicator {
+    background-color: #5898D4 !important;
+}
+
+.dark-mode .q-tabs {
+    background-color: var(--bg-tertiary) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+.dark-mode .q-tab {
+    color: var(--text-secondary) !important;
+}
+
+.dark-mode .q-tab--active {
+    color: var(--text-primary) !important;
+}
+
+.q-tab-panels {
+    background-color: transparent !important;
+}
+
+.q-tab-panel {
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+.q-tab-panel .q-scroll-area {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
+.small-tab-label .q-tab__label {
+    font-size: 0.7rem !important; /* Adjust as needed */
+}
+
+.q-tab-panel > .nicegui-column > :first-child {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
+/* Schema tree styling for dark mode */
+.dark-mode .q-tree__node-header-content span {
+    color: var(--text-primary)  ;
+}
+
+.dark-mode .q-tree__node-header-content span[style*="font-family: monospace"] > span {
+    color: #9e9e9e !important;
+    font-size: 0.8rem !important;
+}
+
+.dark-mode .q-tree__node-header-content span[style*="font-family: monospace"] > span:first-child {
+    color: #FFFFFF !important;
+    font-size: 0.8rem !important;
+}
+
+.dark-mode .q-tree__node-header-content span[style*="font-family: monospace"] > span:last-child {
+    color: #9e9e9e !important;
+    font-size: 0.8rem !important;
+}
+
+.dark-mode .q-tree__icon {
+    color: var(--text-primary) !important;
+}
+
+.q-tree__node--child::before {
+    display: none !important;
+}
+
+/* Ensure monospace column text is visible in dark mode */
+.dark-mode span[style*="font-family: monospace"] span {
+    color: var(--text-primary) !important;
+}
+
+/* Grey color for column types in dark mode */
+.dark-mode span[style*="color: #9e9e9e"] {
+    color: #9e9e9e !important;
 }
 
 .timer-text {
@@ -485,6 +575,10 @@ body {
 
 .dark-mode .q-select .q-field__control:hover:before { 
     border-color: var(--text-secondary) !important; 
+}
+
+.dark-mode .q-field__label {
+    color: #bdbdbd !important; /* White labels in Dark Mode */
 }
 
 .dark-mode .q-menu { 
@@ -1061,6 +1155,96 @@ def get_file_icon(file_extension):
     }
     return icons.get(file_extension.lower(), 'description')
 
+async def get_database_schema():
+    """
+    Retrieves all table names along with their respective column names and data types
+    from the connected database.
+    """
+    if not notebook.db_connection:
+        return {"error": "Not connected to database"}
+    
+    schema_data = {}
+    try:
+        cur = notebook.db_connection.cursor()
+        
+        # Get all tables
+        cur.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            ORDER BY table_name;
+        """)
+        tables = [row[0] for row in cur.fetchall()]
+        
+        # Get columns for each table
+        for table_name in tables:
+            schema_data[table_name] = []
+            cur.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s
+                ORDER BY ordinal_position;
+            """, (table_name,))
+            
+            columns_with_types = cur.fetchall()
+            
+            processed_columns = []
+            for col_name, col_type in columns_with_types:
+                # Simplify data types for display
+                if col_type == 'character varying':
+                    col_type = 'varchar'
+                elif col_type == 'timestamp without time zone':
+                    col_type = 'timestamp'
+                processed_columns.append((col_name, col_type))
+            
+            schema_data[table_name] = processed_columns
+        
+        cur.close()
+        return schema_data
+        
+    except Exception as e:
+        logger.error(f"Error fetching database schema: {e}", exc_info=True)
+        return {"error": f"Failed to fetch schema: {e}"}
+
+def build_schema_tree_nodes(schema_data: dict) -> list:
+    """Build tree nodes for database schema with aligned column types."""
+    # Find the maximum column name length across all tables
+    max_col_length = 0
+    for table_name, columns in schema_data.items():
+        for col_name, _ in columns:
+            max_col_length = max(max_col_length, len(col_name))
+    
+    # Add some padding
+    max_col_length += 1
+    
+    nodes = []
+    for table_name, columns in schema_data.items():
+        # Create child nodes for columns
+        column_nodes = []
+        for i, (col_name, col_type) in enumerate(columns):
+            column_nodes.append({
+                'id': f'col_{table_name}_{i}',
+                'label': col_name,
+                'col_type': col_type,
+                'is_column': True,
+                'max_width': max_col_length,
+                'header': 'standard',
+                'selectable': False
+            })
+        
+        # Create parent node for the table
+        nodes.append({
+            'id': f'tbl_{table_name}',
+            'label': table_name,
+            'icon': 'backup_table',
+            'text_color': 'primary',
+            'children': column_nodes,
+            'header': 'standard',
+            'selectable': False,
+            'is_column': False
+        })
+    return nodes
+
 class NotebookApp:
     def __init__(self):
         self.cells = []
@@ -1467,6 +1651,11 @@ title_label: Optional[ui.label] = None
 working_dir_input: Optional[ui.input] = None
 current_working_dir_label: Optional[ui.label] = None
 working_dir_display: Optional[ui.label] = None
+schema_tree: Optional[ui.tree] = None
+schema_container: Optional[ui.scroll_area] = None
+db_schema_data: Dict[str, Any] = {}
+active_tab: Optional[ui.tabs] = None
+
 
 
 async def pick_file_native(mode='save', file_types=None, initial_file: Optional[str] = None, initial_dir: Optional[str] = None) -> Optional[str]:
@@ -1636,7 +1825,7 @@ async def save_cell_code(cell_data: Dict[str, Any]):
         logger.info(f"Attempting to write cell code to: {actual_filepath}")
         actual_filepath.write_text(code_content, encoding='utf-8')
         ui.notify(f"Cell code saved as '{actual_filepath.name}' in working directory.", type='positive')
-        await refresh_file_tree_ui() 
+        await refresh_trees_ui() 
     except Exception as e:
         logger.error(f"Failed to save cell code to {actual_filepath}: {e}", exc_info=True)
         ui.notify(f"Failed to save cell code: {e}", type='negative')
@@ -1684,45 +1873,134 @@ async def handle_download_csv(cell_data: Dict[str, Any]):
     try:
         await asyncio.to_thread(df_to_download.to_csv, filepath, index=False)
         ui.notify(f"Table saved as '{filename}' in working directory.", type='positive')
-        await refresh_file_tree_ui()
+        await refresh_trees_ui()
     except Exception as e:
         logger.error(f"Failed to save DataFrame as CSV to {filepath}: {e}", exc_info=True)
         ui.notify(f"Failed to save CSV: {e}", type='negative')
 
 
-async def refresh_file_tree_ui():
-    global file_tree, tree_container
+async def refresh_trees_ui():
+    """Refresh both file tree and schema tree if needed."""
+    global file_tree, tree_container, notebook
     
-    if not file_tree or not tree_container:
-        return
-
-    new_tree_nodes, new_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
-
-    if new_state_snapshot != notebook.last_tree_state:
-        logger.info("File tree changed. Updating UI...")
-        tree_container.clear()
-        with tree_container:
-            file_tree = ui.tree(
-                new_tree_nodes, label_key='label', children_key='children', node_key='id',
-            ).classes('w-full')
-
-            def on_tree_double_click(event):
-                if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
-                    asyncio.create_task(load_notebook_from_path(event.node['path']))
+    if active_tab.value == 'files':
+        # Refresh file tree logic
+        if not tree_container:
+            return
+        
+        new_tree_nodes, new_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
+        
+        # Check if tree has changed
+        if new_state_snapshot != notebook.last_tree_state:
+            logger.info("File tree changed. Updating UI...")
+            notebook.last_tree_state = new_state_snapshot
+            tree_container.clear()
             
-            file_tree.on('node_dblclick', on_tree_double_click) 
+            with tree_container:
+                if new_tree_nodes:
+                    file_tree = ui.tree(new_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+                    
+                    def on_tree_double_click(event):
+                        if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
+                            asyncio.create_task(load_notebook_from_path(event.node['path']))
+                    
+                    file_tree.on('node_dblclick', on_tree_double_click)
+                    
+                    # Expand directories by default
+                    expand_ids = [node['id'] for node in new_tree_nodes if not node.get('is_file', True) and 'children' in node]
+                    if expand_ids:
+                        file_tree.expand(expand_ids)
+                    
+                    # Colorize .dnb files
+                    ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
+                else:
+                    ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
+    
+    # Refresh schema tree
+    elif active_tab.value == 'schema' and notebook.db_connection:
+        await refresh_schema_tree_ui()
 
-            if new_tree_nodes:
-                expand_ids = [node['id'] for node in new_tree_nodes if not node.get('is_file', True) and 'children' in node]
-                if expand_ids: 
-                    file_tree.expand(expand_ids)
+async def refresh_schema_tree_ui():
+    """Refresh the database schema tree with a single toggle button for expand/collapse."""
+    global schema_tree, schema_container, db_schema_data
+    
+    if not schema_container:
+        return
+    
+    new_schema_data = await get_database_schema()
+    
+    # This dictionary will hold the state for the toggle button.
+    # It's created/reset if the schema data changes and the UI is rebuilt.
+    # If UI is not rebuilt (schema data hasn't changed), this state persists
+    # for the existing button instance.
+    # We use a dictionary to make it mutable within the callback closure.
+    button_state = {'is_expanded': False} 
+
+    # Check if schema has changed
+    if new_schema_data != db_schema_data:
+        logger.info("Database schema changed. Updating UI...")
+        db_schema_data = new_schema_data
+        schema_container.clear()
+        
+        with schema_container:
+            if "error" in db_schema_data:
+                ui.label(db_schema_data["error"]).classes('text-red-500 p-4')
+            elif not db_schema_data:
+                ui.label("No tables found in the 'public' schema.").classes('text-gray-500 p-4')
             else:
-                ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-grey')
-        
-        notebook.last_tree_state = new_state_snapshot
-        
-        ui.run_javascript('colorizeDnbFiles()')
+                # Container for the toggle button
+                with ui.row().classes('w-full px-0 pb-1 gap-1'):
+                    # Create the single toggle button. Its text and icon will be updated by its handler.
+                    # Initial state: "Expand All"
+                    toggle_button = ui.button('Expand All', icon='unfold_more') \
+                        .props('flat dense color="grey-5" size=sm') \
+                        .classes('text-xs')
 
+                # Create the tree
+                tree_nodes = build_schema_tree_nodes(db_schema_data)
+                # Use a local variable for tree creation, then assign to global
+                current_schema_tree = ui.tree(
+                    nodes=tree_nodes,
+                    node_key='id',
+                    label_key='label',
+                    children_key='children'
+                ).classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+                
+                # Update the global schema_tree reference to the newly created tree
+                schema_tree = current_schema_tree
+
+                # Define the on_click handler for the toggle button
+                def handle_toggle_expand_collapse():
+                    if schema_tree: # Ensure schema_tree (the global var) points to a valid tree
+                        if not button_state['is_expanded']:
+                            # Action: Expand All
+                            schema_tree.run_method('expandAll')
+                            toggle_button.text = 'Collapse All'
+                            toggle_button.props('icon=unfold_less')
+                        else:
+                            # Action: Collapse All
+                            schema_tree.run_method('collapseAll')
+                            toggle_button.text = 'Expand All'
+                            toggle_button.props('icon=unfold_more')
+                        
+                        # Flip the state
+                        button_state['is_expanded'] = not button_state['is_expanded']
+                        # NiceGUI automatically updates the button if its .text or .props change
+
+                # Assign the handler to the button
+                toggle_button.on_click(handle_toggle_expand_collapse)
+                
+                # Add custom slot for rendering labels with aligned types
+                schema_tree.add_slot('default-header', '''
+                    <span v-if="props.node.is_column" style="display: flex; align-items: center; font-family: monospace;">
+                        <span :style="`display: inline-block; width: ${props.node.max_width - 3}ch; color: #9e9e9e;`">{{ props.node.label }}</span>
+                        <span style="color: #9e9e9e; margin-left: 2px;">{{ props.node.col_type }}</span>
+                    </span>
+                    <span v-else style="display: flex; align-items: center;">
+                        <q-icon :name="props.node.icon" color="primary" style="margin-right: 8px;" />
+                        <span>{{ props.node.label }}</span>
+                    </span>
+                ''')
 async def pick_directory_native() -> Optional[str]:
     if not TKINTER_AVAILABLE:
         logger.error("tkinter is not available for native directory picker.")
@@ -1780,7 +2058,7 @@ async def update_working_directory_and_tree(new_path_str: str):
     if new_resolved_path == notebook.working_directory:
         if working_dir_input: 
             working_dir_input.set_value(str(notebook.working_directory))
-        await refresh_file_tree_ui() 
+        await refresh_trees_ui() 
         return
 
     if not new_resolved_path.is_dir():
@@ -1798,7 +2076,7 @@ async def update_working_directory_and_tree(new_path_str: str):
         display_path = get_last_n_path_parts(str(notebook.working_directory), 2)
         working_dir_display.text = display_path
 
-    await refresh_file_tree_ui() 
+    await refresh_trees_ui() 
 
 async def load_notebook_from_path(filepath: str):
     if notebook.is_modified:
@@ -2159,45 +2437,69 @@ with main_container:
             cell_container._add_cell_button = ui.button('+ Add Cell', on_click=lambda: asyncio.create_task(add_cell_and_mark_modified('sql'))).classes('add-cell-button').props('id=add-cell-button')
 
 with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
-        .props('width=225 behavior=desktop') \
+        .props('width=240 behavior=desktop') \
         .classes('bg-[var(--bg-primary)]') \
-        .style('padding: 6px 0; margin: 0') as drawer:
+        .style('padding: 0; margin: 0') as drawer:
     left_drawer_instance = drawer
 
     with ui.column().classes('w-full h-full no-wrap'):
-        with ui.row().classes('items-center w-full'):
-            browse_wd_button = ui.button(icon='folder_open', on_click=handle_browse_working_directory) \
-                .classes('browse-wd-button-hover-effect') \
-                .style('width: 24px; height: 24px; font-size: 12px; flex-shrink: 0; margin-left: 8px; margin-top: 4px; margin-right: -9px;').props('round')
-            
-            if not TKINTER_AVAILABLE:
-                browse_wd_button.disable()
-                browse_wd_button.tooltip("Native directory picker unavailable (tkinter missing)")
-            
-            display_path = get_last_n_path_parts(str(notebook.working_directory), 2) 
-            working_dir_display = ui.label(display_path).style('font-size: 14px; margin-top: 5px;')
-            
-        with ui.scroll_area().classes('flex-grow min-h-0 w-full') as tc_instance:
-            tree_container = tc_instance
-            initial_tree_nodes, initial_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
-            notebook.last_tree_state = initial_state_snapshot 
-            
-            file_tree = ui.tree(initial_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+        # Tabs for Files and Schema
+        with ui.tabs().classes('w-full bg-primary').props('dense align=justify').style('height: 45px;') as tabs:
+            active_tab = tabs
+            files_tab = ui.tab('files', label='Files', icon='folder').style('height: 44px; min-height: 44px;').classes('small-tab-label')
+            schema_tab = ui.tab('schema', label='Schema', icon='lan').style('height: 44px; min-height: 44px;').classes('small-tab-label')
+        
+        with ui.tab_panels(tabs, value='files').classes('w-full flex-grow'):
+            # Files Tab Panel
+            with ui.tab_panel('files').classes('p-0'):
+                with ui.column().classes('w-full h-full no-wrap'):
+                    # Working directory controls
+                    with ui.row().classes('items-center w-full px-2 py-1'):
+                        browse_wd_button = ui.button(icon='folder_open', on_click=handle_browse_working_directory) \
+                            .classes('browse-wd-button-hover-effect') \
+                            .style('width: 24px; height: 24px; font-size: 12px; flex-shrink: 0; margin-right: -9px;').props('round')
+                        
+                        if not TKINTER_AVAILABLE:
+                            browse_wd_button.disable()
+                            browse_wd_button.tooltip("Native directory picker unavailable (tkinter missing)")
+                        
+                        display_path = get_last_n_path_parts(str(notebook.working_directory), 2)
+                        working_dir_display = ui.label(display_path).style('font-size: 14px;')
+                    
+                    # File tree
+                    with ui.scroll_area().classes('flex-grow min-h-0 w-full') as tc_instance:
+                        tree_container = tc_instance
+                        initial_tree_nodes, initial_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
+                        notebook.last_tree_state = initial_state_snapshot
+                        
+                        file_tree = ui.tree(initial_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full').style('margin-left: -10px; margin-top: -10px;')
 
-            def on_tree_double_click(event):
-                if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
-                    asyncio.create_task(load_notebook_from_path(event.node['path']))
-            
-            file_tree.on('node_dblclick', on_tree_double_click) 
+                        def on_tree_double_click(event):
+                            if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
+                                asyncio.create_task(load_notebook_from_path(event.node['path']))
+                        
+                        file_tree.on('node_dblclick', on_tree_double_click)
 
-            if initial_tree_nodes:
-                expand_ids = [node['id'] for node in initial_tree_nodes if not node.get('is_file', True) and 'children' in node]
-                if expand_ids: 
-                    file_tree.expand(expand_ids)
-            else:
-                ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
+                        if initial_tree_nodes:
+                            expand_ids = [node['id'] for node in initial_tree_nodes if not node.get('is_file', True) and 'children' in node]
+                            if expand_ids:
+                                file_tree.expand(expand_ids)
+                        else:
+                            ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
+                        
+                        ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
             
-            ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
+            # Schema Tab Panel
+            with ui.tab_panel('schema').classes('p-0'):
+                with ui.column().classes('w-full h-full no-wrap'):
+                    # Schema tree container
+                    with ui.scroll_area().classes('flex-grow min-h-0 w-full') as sc_instance:
+                        schema_container = sc_instance
+                        
+                        if notebook.db_connection:
+                            ui.timer(0.1, refresh_schema_tree_ui, once=True)
+                        else:
+                            ui.label("Not connected to database").classes('text-gray-500 p-4 text-center')
 
 with ui.right_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
         .props('width=450') \
@@ -2260,6 +2562,9 @@ with ui.dialog() as connection_dialog:
                     status_indicator.content = '<div class="status-indicator status-connected"></div>'
                     status_label.text = 'Connected'
                     reconnect_btn.visible = True
+                    # Refresh schema tree if on schema tab
+                    if active_tab.value == 'schema':
+                        await refresh_schema_tree_ui()
                     if save_creds_checkbox.value: 
                         notebook.save_credentials(config)
                     else:
@@ -2280,7 +2585,7 @@ async def initialize_app():
     
     await setup_keyboard_shortcuts()
     
-    ui.timer(0.5, refresh_file_tree_ui, once=False)
+    ui.timer(0.5, refresh_trees_ui, once=False)
 
 ui.timer(0.1, initialize_app, once=True) 
 
