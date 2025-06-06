@@ -1157,49 +1157,50 @@ def get_file_icon(file_extension):
 
 async def get_database_schema():
     """
-    Retrieves all table names along with their respective column names and data types
-    from the connected database using asyncpg.
+    Retrieves all table and column information with a single efficient query.
+    Returns organized schema data for building the tree.
     """
     if not notebook.db_connection:
         return {"error": "Not connected to database"}
     
-    schema_data = {}
     try:
-        # Get all tables
-        tables_query = """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            ORDER BY table_name;
-        """
-        table_records = await notebook.db_connection.fetch(tables_query)
-        tables = [record['table_name'] for record in table_records]
+        # Single query to get all schema information at once
+        rows = await notebook.db_connection.fetch("""
+            SELECT 
+                table_schema,
+                table_name, 
+                column_name, 
+                data_type
+            FROM information_schema.columns
+            WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+            ORDER BY table_schema, table_name, ordinal_position
+        """)
         
-        # Get columns for each table
-        for table_name in tables:
-            schema_data[table_name] = []
-            columns_query = """
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = $1
-                ORDER BY ordinal_position;
-            """
+        # Organize data by schema -> table -> columns
+        schema_data = {}
+        for row in rows:
+            schema = row['table_schema']
+            table_name = row['table_name']
+            column_name = row['column_name']
+            data_type = row['data_type']
             
-            column_records = await notebook.db_connection.fetch(columns_query, table_name)
+            # Simplify common data types for cleaner display
+            if data_type == 'character varying':
+                data_type = 'varchar'
+            elif data_type == 'timestamp without time zone':
+                data_type = 'timestamp'
+            elif data_type == 'timestamp with time zone':
+                data_type = 'timestamptz'
             
-            processed_columns = []
-            for record in column_records:
-                col_name = record['column_name']
-                col_type = record['data_type']
-                
-                # Simplify data types for display
-                if col_type == 'character varying':
-                    col_type = 'varchar'
-                elif col_type == 'timestamp without time zone':
-                    col_type = 'timestamp'
-                processed_columns.append((col_name, col_type))
+            # Initialize schema if not exists
+            if schema not in schema_data:
+                schema_data[schema] = {}
             
-            schema_data[table_name] = processed_columns
+            # Initialize table if not exists
+            if table_name not in schema_data[schema]:
+                schema_data[schema][table_name] = []
+            
+            schema_data[schema][table_name].append((column_name, data_type))
         
         return schema_data
         
@@ -1209,41 +1210,61 @@ async def get_database_schema():
 
 def build_schema_tree_nodes(schema_data: dict) -> list:
     """Build tree nodes for database schema with aligned column types."""
-    # Find the maximum column name length across all tables
+    # Find the maximum column name length across all schemas/tables
     max_col_length = 0
-    for table_name, columns in schema_data.items():
-        for col_name, _ in columns:
-            max_col_length = max(max_col_length, len(col_name))
+    for schema_name, tables in schema_data.items():
+        for table_name, columns in tables.items():
+            for col_name, _ in columns:
+                max_col_length = max(max_col_length, len(col_name))
     
-    # Add some padding
-    max_col_length += 1
+    # Add some padding for alignment
+    max_col_length += 2
     
     nodes = []
-    for table_name, columns in schema_data.items():
-        # Create child nodes for columns
-        column_nodes = []
-        for i, (col_name, col_type) in enumerate(columns):
-            column_nodes.append({
-                'id': f'col_{table_name}_{i}',
-                'label': col_name,
-                'col_type': col_type,
-                'is_column': True,
-                'max_width': max_col_length,
+    for schema_name, tables in schema_data.items():
+        # Create table nodes for this schema
+        table_nodes = []
+        for table_name, columns in tables.items():
+            # Create column nodes for this table
+            column_nodes = []
+            for i, (col_name, col_type) in enumerate(columns):
+                column_nodes.append({
+                    'id': f'col_{schema_name}_{table_name}_{i}',
+                    'label': col_name,
+                    'col_type': col_type,
+                    'is_column': True,
+                    'max_width': max_col_length,
+                    'header': 'standard',
+                    'selectable': False
+                })
+            
+            # Create table node
+            table_nodes.append({
+                'id': f'tbl_{schema_name}_{table_name}',
+                'label': table_name,
+                'icon': 'backup_table',
+                'text_color': 'primary',
+                'children': column_nodes,
                 'header': 'standard',
-                'selectable': False
+                'selectable': False,
+                'is_column': False,
+                'is_table': True
             })
         
-        # Create parent node for the table
+        # Create schema node
         nodes.append({
-            'id': f'tbl_{table_name}',
-            'label': table_name,
-            'icon': 'backup_table',
-            'text_color': 'primary',
-            'children': column_nodes,
+            'id': f'schema_{schema_name}',
+            'label': schema_name,
+            'icon': 'folder',
+            'text_color': 'secondary',
+            'children': table_nodes,
             'header': 'standard',
             'selectable': False,
-            'is_column': False
+            'is_column': False,
+            'is_table': False,
+            'is_schema': True
         })
+    
     return nodes
 
 class NotebookApp:
@@ -1898,7 +1919,7 @@ async def refresh_trees_ui():
     global file_tree, tree_container, notebook
     
     if active_tab.value == 'files':
-        # Refresh file tree logic
+        # Refresh file tree logic (existing code)
         if not tree_container:
             return
         
@@ -1929,92 +1950,99 @@ async def refresh_trees_ui():
                     ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
                 else:
                     ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
-    
-    # Refresh schema tree
-    elif active_tab.value == 'schema' and notebook.db_connection:
-        await refresh_schema_tree_ui()
 
 async def refresh_schema_tree_ui():
-    """Refresh the database schema tree with a single toggle button for expand/collapse."""
+    """Refresh the database schema tree with optimized loading."""
     global schema_tree, schema_container, db_schema_data
     
     if not schema_container:
         return
     
-    new_schema_data = await get_database_schema()
+    # Don't refresh if not connected
+    if not notebook.db_connection:
+        schema_container.clear()
+        with schema_container:
+            ui.label("Not connected to database").classes('text-gray-500 p-4 text-center')
+        return
     
-    # This dictionary will hold the state for the toggle button.
-    # It's created/reset if the schema data changes and the UI is rebuilt.
-    # If UI is not rebuilt (schema data hasn't changed), this state persists
-    # for the existing button instance.
-    # We use a dictionary to make it mutable within the callback closure.
-    button_state = {'is_expanded': False} 
-
-    # Check if schema has changed
-    if new_schema_data != db_schema_data:
-        logger.info("Database schema changed. Updating UI...")
-        db_schema_data = new_schema_data
+    try:
+        # Show loading state
+        schema_container.clear()
+        with schema_container:
+            ui.spinner(size='md').classes('mx-auto my-8')
+            ui.label("Loading schema...").classes('text-center text-gray-500')
+        
+        # Get schema data with single query
+        new_schema_data = await get_database_schema()
+        
+        # Clear loading and build tree
         schema_container.clear()
         
         with schema_container:
-            if "error" in db_schema_data:
-                ui.label(db_schema_data["error"]).classes('text-red-500 p-4')
-            elif not db_schema_data:
-                ui.label("No tables found in the 'public' schema.").classes('text-gray-500 p-4')
-            else:
-                # Container for the toggle button
-                with ui.row().classes('w-full px-0 pb-1 gap-1'):
-                    # Create the single toggle button. Its text and icon will be updated by its handler.
-                    # Initial state: "Expand All"
-                    toggle_button = ui.button('Expand All', icon='unfold_more') \
-                        .props('flat dense color="grey-5" size=sm') \
-                        .classes('text-xs')
+            if "error" in new_schema_data:
+                ui.label(new_schema_data["error"]).classes('text-red-500 p-4')
+                return
+            elif not new_schema_data:
+                ui.label("No tables found.").classes('text-gray-500 p-4 text-center')
+                return
+            
+            # Update global schema data
+            db_schema_data = new_schema_data
+            
+            # Container for the toggle button
+            with ui.row().classes('w-full px-2 pb-1 gap-1'):
+                # Create the single toggle button
+                button_state = {'is_expanded': False} 
+                toggle_button = ui.button('Expand All', icon='unfold_more') \
+                    .props('flat dense color="grey-5" size="sm"') \
+                    .classes('text-xs')
 
-                # Create the tree
-                tree_nodes = build_schema_tree_nodes(db_schema_data)
-                # Use a local variable for tree creation, then assign to global
-                current_schema_tree = ui.tree(
-                    nodes=tree_nodes,
-                    node_key='id',
-                    label_key='label',
-                    children_key='children'
-                ).classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+            # Create the tree with optimized settings
+            tree_nodes = build_schema_tree_nodes(new_schema_data)
+            schema_tree = ui.tree(
+                nodes=tree_nodes,
+                node_key='id',
+                label_key='label',
+                children_key='children'
+            ).classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+
+            # Define the toggle button handler
+            def handle_toggle_expand_collapse():
+                if schema_tree:
+                    if not button_state['is_expanded']:
+                        # Expand All
+                        schema_tree.run_method('expandAll')
+                        toggle_button.text = 'Collapse All'
+                        toggle_button.props('icon=unfold_less')
+                    else:
+                        # Collapse All
+                        schema_tree.run_method('collapseAll')
+                        toggle_button.text = 'Expand All'
+                        toggle_button.props('icon=unfold_more')
+                    
+                    button_state['is_expanded'] = not button_state['is_expanded']
+
+            toggle_button.on_click(handle_toggle_expand_collapse)
+            
+            # Add custom slot for rendering labels with aligned types
+            schema_tree.add_slot('default-header', '''
+                <span v-if="props.node.is_column" style="display: flex; align-items: center; font-family: monospace;">
+                    <span :style="`display: inline-block; width: ${props.node.max_width - 3}ch; color: #9e9e9e;`">{{ props.node.label }}</span>
+                    <span style="color: #9e9e9e; margin-left: 2px;">{{ props.node.col_type }}</span>
+                </span>
+                <span v-else style="display: flex; align-items: center;">
+                    <q-icon :name="props.node.icon" color="primary" style="margin-right: 8px;" />
+                    <span>{{ props.node.label }}</span>
+                </span>
+            ''')
                 
-                # Update the global schema_tree reference to the newly created tree
-                schema_tree = current_schema_tree
+    except Exception as e:
+        logger.error(f"Error refreshing schema tree: {e}", exc_info=True)
+        schema_container.clear()
+        with schema_container:
+            ui.label(f"Error loading schema: {str(e)}").classes('text-red-500 p-4')
 
-                # Define the on_click handler for the toggle button
-                def handle_toggle_expand_collapse():
-                    if schema_tree: # Ensure schema_tree (the global var) points to a valid tree
-                        if not button_state['is_expanded']:
-                            # Action: Expand All
-                            schema_tree.run_method('expandAll')
-                            toggle_button.text = 'Collapse All'
-                            toggle_button.props('icon=unfold_less')
-                        else:
-                            # Action: Collapse All
-                            schema_tree.run_method('collapseAll')
-                            toggle_button.text = 'Expand All'
-                            toggle_button.props('icon=unfold_more')
-                        
-                        # Flip the state
-                        button_state['is_expanded'] = not button_state['is_expanded']
-                        # NiceGUI automatically updates the button if its .text or .props change
 
-                # Assign the handler to the button
-                toggle_button.on_click(handle_toggle_expand_collapse)
-                
-                # Add custom slot for rendering labels with aligned types
-                schema_tree.add_slot('default-header', '''
-                    <span v-if="props.node.is_column" style="display: flex; align-items: center; font-family: monospace;">
-                        <span :style="`display: inline-block; width: ${props.node.max_width - 3}ch; color: #9e9e9e;`">{{ props.node.label }}</span>
-                        <span style="color: #9e9e9e; margin-left: 2px;">{{ props.node.col_type }}</span>
-                    </span>
-                    <span v-else style="display: flex; align-items: center;">
-                        <q-icon :name="props.node.icon" color="primary" style="margin-right: 8px;" />
-                        <span>{{ props.node.label }}</span>
-                    </span>
-                ''')
 async def pick_directory_native() -> Optional[str]:
     if not TKINTER_AVAILABLE:
         logger.error("tkinter is not available for native directory picker.")
@@ -2435,6 +2463,10 @@ with main_container:
                     status_label.text = "Connected" if success else "Disconnected"
                     ui.notify(f'Reconnection {"successful" if success else "failed"}: {message}', type='positive' if success else 'negative')
                     reconnect_btn.enable()
+                    
+                    # ADD THIS: Refresh schema tree after successful reconnection
+                    if success and active_tab.value == 'schema':
+                        asyncio.create_task(refresh_schema_tree_ui())
                 
                 reconnect_btn = ui.button(icon='refresh', on_click=handle_reconnect).props('flat round dense').tooltip('Reconnect')
                 reconnect_btn.visible = False 
@@ -2515,6 +2547,19 @@ with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True
                         else:
                             ui.label("Not connected to database").classes('text-gray-500 p-4 text-center')
 
+async def on_tab_change(e):
+    """Handle tab switching efficiently"""
+    if e.value == 'schema' and notebook.db_connection:
+        # Only refresh schema if we're switching to schema tab and connected
+        # Use a small delay to ensure UI is ready
+        ui.timer(0.1, refresh_schema_tree_ui, once=True)
+    elif e.value == 'files':
+        # Refresh file tree when switching to files tab
+        await refresh_trees_ui()
+
+# Add this line after creating your tabs
+active_tab.on_value_change(on_tab_change)
+
 with ui.right_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
         .props('width=450') \
         .classes('bg-[var(--bg-primary)]') as r_drawer:
@@ -2576,13 +2621,15 @@ with ui.dialog() as connection_dialog:
                     status_indicator.content = '<div class="status-indicator status-connected"></div>'
                     status_label.text = 'Connected'
                     reconnect_btn.visible = True
-                    # Refresh schema tree if on schema tab
+                    
+                    # Refresh schema tree if on schema tab - with async handling
                     if active_tab.value == 'schema':
-                        await refresh_schema_tree_ui()
+                        # Don't await here to avoid blocking the UI
+                        asyncio.create_task(refresh_schema_tree_ui())
+                    
                     if save_creds_checkbox.value: 
                         notebook.save_credentials(config)
                     else:
-                        # If checkbox is unchecked, clear saved credentials
                         if notebook.credentials_file.exists():
                             notebook.credentials_file.unlink()
                         ui.notify("Credentials not saved.", type='info')
@@ -2599,7 +2646,7 @@ async def initialize_app():
     
     await setup_keyboard_shortcuts()
     
-    ui.timer(0.5, refresh_trees_ui, once=False)
+    ui.timer(0.5, refresh_trees_ui, once=True)
 
 ui.timer(0.1, initialize_app, once=True) 
 
