@@ -19,8 +19,10 @@ import functools
 import matplotlib
 matplotlib.use('Agg') # Use 'Agg' for PNG output (non-interactive)
 import matplotlib.pyplot as plt
-import io # NEW: For in-memory binary streams
-import base64 # NEW: For base64 encoding images
+import io 
+import base64
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
 
 # Attempt to import tkinter for native directory picker
 try:
@@ -1264,6 +1266,10 @@ class NotebookApp:
         self.current_filename = None
         self.is_modified = False
         self.last_tree_state: Optional[List[Tuple[str, bool, float]]] = None
+        self.s3_client = None
+        self.s3_bucket_name = None
+        self.s3_connection_config = {}
+        self.s3_prefix = ''
 
     def generate_cell_id(self):
         return str(uuid.uuid4())[:8]
@@ -1636,6 +1642,176 @@ class NotebookApp:
             plt.close('all') 
             logger.info(f"Restored CWD to: {application_process_cwd} after Python execution.")
 
+    async def connect_to_s3(self, config: Dict[str, Any]):
+        """Connect to S3 bucket with provided credentials"""
+        self.s3_connection_config = config
+        
+        try:
+            # Create S3 client
+            if config.get('endpoint_url'):
+                # For S3-compatible services (MinIO, etc.)
+                self.s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=config['access_key_id'],
+                    aws_secret_access_key=config['secret_access_key'],
+                    region_name=config.get('region', 'us-east-1'),
+                    endpoint_url=config['endpoint_url']
+                )
+            else:
+                # For AWS S3
+                self.s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=config['access_key_id'],
+                    aws_secret_access_key=config['secret_access_key'],
+                    region_name=config.get('region', 'us-east-1')
+                )
+            
+            # Test connection by listing bucket
+            self.s3_bucket_name = config['bucket_name']
+            await asyncio.to_thread(self.s3_client.head_bucket, Bucket=self.s3_bucket_name)
+            
+            return True, f"Connected to S3 bucket: {self.s3_bucket_name}"
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == '404':
+                return False, f"Bucket '{config['bucket_name']}' not found"
+            elif error_code == '403':
+                return False, "Access denied. Check your credentials and permissions"
+            else:
+                return False, f"S3 Error: {str(e)}"
+        except NoCredentialsError:
+            return False, "Invalid credentials"
+        except Exception as e:
+            logger.error(f"S3 connection error: {e}", exc_info=True)
+            return False, f"Connection failed: {str(e)}"
+
+    def create_s3_tree(self, prefix='', max_depth=3, current_depth=0) -> Tuple[List[Dict], bool]:
+        """Create tree structure for S3 bucket contents"""
+        if not self.s3_client or not self.s3_bucket_name:
+            return [], False
+        
+        if current_depth >= max_depth:
+            return [], True
+        
+        tree_data = []
+        has_connection = True
+        
+        try:
+            # List objects with the given prefix
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            page_iterator = paginator.paginate(
+                Bucket=self.s3_bucket_name,
+                Prefix=prefix,
+                Delimiter='/'
+            )
+            
+            # Process folders (common prefixes)
+            folders = []
+            files = []
+            
+            for page in page_iterator:
+                # Get folders
+                if 'CommonPrefixes' in page:
+                    for obj in page['CommonPrefixes']:
+                        folder_path = obj['Prefix']
+                        folder_name = folder_path.rstrip('/').split('/')[-1]
+                        folders.append((folder_name, folder_path))
+                
+                # Get files
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        # Skip if it's the prefix itself
+                        if key == prefix:
+                            continue
+                        # Only include direct children
+                        relative_path = key[len(prefix):]
+                        if '/' not in relative_path:
+                            files.append({
+                                'name': relative_path,
+                                'key': key,
+                                'size': obj['Size'],
+                                'last_modified': obj['LastModified']
+                            })
+            
+            # Sort folders and files
+            folders.sort(key=lambda x: x[0].lower())
+            files.sort(key=lambda x: x['name'].lower())
+            
+            # Add folders to tree
+            for folder_name, folder_path in folders:
+                node = {
+                    'id': f's3://{self.s3_bucket_name}/{folder_path}',
+                    'label': folder_name,
+                    'icon': 'folder',
+                    'path': folder_path,
+                    'is_file': False,
+                    's3_key': folder_path
+                }
+                
+                # Recursively get children if within depth limit
+                if current_depth < max_depth - 1:
+                    children, _ = self.create_s3_tree(folder_path, max_depth, current_depth + 1)
+                    if children:
+                        node['children'] = children
+                
+                tree_data.append(node)
+            
+            # Add files to tree
+            for file_info in files:
+                file_ext = Path(file_info['name']).suffix
+                node = {
+                    'id': f's3://{self.s3_bucket_name}/{file_info["key"]}',
+                    'label': file_info['name'],
+                    'icon': get_file_icon(file_ext),
+                    'path': file_info['key'],
+                    'is_file': True,
+                    's3_key': file_info['key'],
+                    'size': file_info['size'],
+                    'last_modified': file_info['last_modified'].isoformat()
+                }
+                tree_data.append(node)
+                
+        except ClientError as e:
+            logger.error(f"Error listing S3 objects: {e}")
+            has_connection = False
+        except Exception as e:
+            logger.error(f"Unexpected error creating S3 tree: {e}", exc_info=True)
+            has_connection = False
+        
+        return tree_data, has_connection
+
+    async def download_s3_file(self, s3_key: str, local_path: Optional[Path] = None) -> bool:
+        """Download a file from S3 to local working directory"""
+        if not self.s3_client or not self.s3_bucket_name:
+            ui.notify("Not connected to S3", type='warning')
+            return False
+        
+        try:
+            # Default to working directory if no path specified
+            if local_path is None:
+                filename = s3_key.split('/')[-1]
+                local_path = self.working_directory / filename
+            
+            # Download file
+            await asyncio.to_thread(
+                self.s3_client.download_file,
+                self.s3_bucket_name,
+                s3_key,
+                str(local_path)
+            )
+            
+            ui.notify(f"Downloaded '{s3_key}' to local directory", type='positive')
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error downloading S3 file: {e}", exc_info=True)
+            ui.notify(f"Failed to download file: {str(e)}", type='negative')
+            return False
+    
+    
+
 notebook = NotebookApp()
 ui.add_head_html(custom_css)
 
@@ -1655,6 +1831,93 @@ schema_tree: Optional[ui.tree] = None
 schema_container: Optional[ui.scroll_area] = None
 db_schema_data: Dict[str, Any] = {}
 active_tab: Optional[ui.tabs] = None
+s3_tree = None
+s3_tree_container = None
+s3_status_indicator = None
+s3_status_label = None
+s3_bucket_display = None
+
+# Function to refresh S3 tree
+async def refresh_s3_tree():
+    global s3_tree, s3_tree_container, s3_bucket_display
+    
+    if not s3_tree_container:
+        return
+    
+    if not notebook.s3_client or not notebook.s3_bucket_name:
+        return
+    
+    # Get S3 tree data
+    tree_nodes, has_connection = notebook.create_s3_tree(notebook.s3_prefix, max_depth=3)
+    
+    if not has_connection:
+        s3_tree_container.clear()
+        with s3_tree_container:
+            ui.label("Connection lost. Please reconnect.").classes('text-red-500 p-4 text-center')
+        return
+    
+    # Update tree
+    s3_tree_container.clear()
+    with s3_tree_container:
+        if tree_nodes:
+            s3_tree = ui.tree(tree_nodes, label_key='label', children_key='children', node_key='id') \
+                .classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+            
+            # Handle double-click for file download
+            def on_s3_tree_double_click(event):
+                if event.node.get('is_file'):
+                    s3_key = event.node.get('s3_key')
+                    if s3_key:
+                        asyncio.create_task(notebook.download_s3_file(s3_key))
+                        asyncio.create_task(refresh_trees_ui())
+            
+            s3_tree.on('node_dblclick', on_s3_tree_double_click)
+            
+            # Add right-click context menu
+            def on_s3_tree_right_click(event):
+                node = event.node
+                with ui.menu() as menu:
+                    if node.get('is_file'):
+                        ui.menu_item('Download', on_click=lambda: asyncio.create_task(
+                            notebook.download_s3_file(node['s3_key'])
+                        ))
+                        ui.menu_item('Copy S3 Path', on_click=lambda: ui.notify(
+                            f"S3 path: s3://{notebook.s3_bucket_name}/{node['s3_key']}", 
+                            type='info'
+                        ))
+                    else:
+                        ui.menu_item('Enter Folder', on_click=lambda: asyncio.create_task(
+                            change_s3_prefix(node['s3_key'])
+                        ))
+                menu.open()
+            
+            s3_tree.on('node_click', on_s3_tree_right_click)
+            
+            # Expand folders by default
+            expand_ids = [node['id'] for node in tree_nodes if not node.get('is_file', True) and 'children' in node]
+            if expand_ids:
+                s3_tree.expand(expand_ids)
+        else:
+            ui.label("Bucket is empty or no objects match the current prefix").classes('text-gray-500 p-4 text-center')
+
+async def change_s3_prefix(new_prefix: str):
+    """Change the current S3 prefix (directory)"""
+    notebook.s3_prefix = new_prefix
+    s3_bucket_display.text = f"Bucket: {notebook.s3_bucket_name}" + (f" / {new_prefix}" if new_prefix else "")
+    await refresh_s3_tree()
+
+# Update the refresh_trees_ui function to include S3
+async def refresh_trees_ui():
+    """Refresh file tree, schema tree, or S3 tree based on active tab."""
+    global file_tree, tree_container, notebook, active_tab
+    
+    if active_tab.value == 'files':
+        # ... existing file tree refresh code ...
+        pass
+    elif active_tab.value == 'schema' and notebook.db_connection:
+        await refresh_schema_tree_ui()
+    elif active_tab.value == 's3' and notebook.s3_client:
+        await refresh_s3_tree()
 
 
 
@@ -2443,63 +2706,36 @@ with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True
     left_drawer_instance = drawer
 
     with ui.column().classes('w-full h-full no-wrap'):
-        # Tabs for Files and Schema
+        # Tabs for Files, Schema, and S3
         with ui.tabs().classes('w-full bg-primary').props('dense align=justify').style('height: 45px;') as tabs:
             active_tab = tabs
             files_tab = ui.tab('files', label='Files', icon='folder').style('height: 44px; min-height: 44px;').classes('small-tab-label')
             schema_tab = ui.tab('schema', label='Schema', icon='lan').style('height: 44px; min-height: 44px;').classes('small-tab-label')
+            s3_tab = ui.tab('s3', label='S3', icon='cloud').style('height: 44px; min-height: 44px;').classes('small-tab-label')
         
         with ui.tab_panels(tabs, value='files').classes('w-full flex-grow'):
-            # Files Tab Panel
-            with ui.tab_panel('files').classes('p-0'):
-                with ui.column().classes('w-full h-full no-wrap'):
-                    # Working directory controls
-                    with ui.row().classes('items-center w-full px-2 py-1'):
-                        browse_wd_button = ui.button(icon='folder_open', on_click=handle_browse_working_directory) \
-                            .classes('browse-wd-button-hover-effect') \
-                            .style('width: 24px; height: 24px; font-size: 12px; flex-shrink: 0; margin-right: -9px;').props('round')
-                        
-                        if not TKINTER_AVAILABLE:
-                            browse_wd_button.disable()
-                            browse_wd_button.tooltip("Native directory picker unavailable (tkinter missing)")
-                        
-                        display_path = get_last_n_path_parts(str(notebook.working_directory), 2)
-                        working_dir_display = ui.label(display_path).style('font-size: 14px;')
-                    
-                    # File tree
-                    with ui.scroll_area().classes('flex-grow min-h-0 w-full') as tc_instance:
-                        tree_container = tc_instance
-                        initial_tree_nodes, initial_state_snapshot = create_file_tree(path=notebook.working_directory, max_depth=3)
-                        notebook.last_tree_state = initial_state_snapshot
-                        
-                        file_tree = ui.tree(initial_tree_nodes, label_key='label', children_key='children', node_key='id').classes('w-full').style('margin-left: -10px; margin-top: -10px;')
-
-                        def on_tree_double_click(event):
-                            if event.node.get('is_file') and event.node.get('path', '').endswith('.dnb'):
-                                asyncio.create_task(load_notebook_from_path(event.node['path']))
-                        
-                        file_tree.on('node_dblclick', on_tree_double_click)
-
-                        if initial_tree_nodes:
-                            expand_ids = [node['id'] for node in initial_tree_nodes if not node.get('is_file', True) and 'children' in node]
-                            if expand_ids:
-                                file_tree.expand(expand_ids)
-                        else:
-                            ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
-                        
-                        ui.timer(0.2, lambda: ui.run_javascript('colorizeDnbFiles()'), once=True)
+            # ... existing Files and Schema tab panels ...
             
-            # Schema Tab Panel
-            with ui.tab_panel('schema').classes('p-0'):
+            # S3 Tab Panel
+            with ui.tab_panel('s3').classes('p-0'):
                 with ui.column().classes('w-full h-full no-wrap'):
-                    # Schema tree container
-                    with ui.scroll_area().classes('flex-grow min-h-0 w-full') as sc_instance:
-                        schema_container = sc_instance
-                        
-                        if notebook.db_connection:
-                            ui.timer(0.1, refresh_schema_tree_ui, once=True)
-                        else:
-                            ui.label("Not connected to database").classes('text-gray-500 p-4 text-center')
+                    # S3 connection status and controls
+                    with ui.row().classes('items-center w-full px-2 py-1 gap-2'):
+                        s3_status_indicator = ui.html('<div class="status-indicator status-disconnected"></div>')
+                        s3_status_label = ui.label('Not connected').style('font-size: 12px;')
+                        ui.space()
+                        s3_connect_btn = ui.button(icon='link', on_click=lambda: s3_connection_dialog.open()) \
+                            .props('dense round') \
+                            .style('width: 28px; height: 28px;') \
+                            .tooltip('Configure S3 Connection')
+                    
+                    # S3 bucket info
+                    s3_bucket_display = ui.label('No bucket selected').classes('px-2 py-1 text-caption text-[var(--text-secondary)]')
+                    
+                    # S3 file tree
+                    with ui.scroll_area().classes('flex-grow min-h-0 w-full') as s3_tree_container:
+                        s3_tree = None
+                        ui.label("Connect to an S3 bucket to browse files").classes('text-gray-500 p-4 text-center')
 
 with ui.right_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
         .props('width=450') \
@@ -2578,6 +2814,100 @@ with ui.dialog() as connection_dialog:
                     ui.notify(f'Connection failed: {message}', type='negative')
             ui.button('Connect', on_click=connect_action).classes('bg-blue-500')
 
+# S3 Connection Dialog
+with ui.dialog() as s3_connection_dialog:
+    with ui.card().classes('w-96'):
+        ui.label('S3 Configuration').classes('text-lg font-semibold mb-2')
+        
+        # Basic S3 settings
+        s3_bucket_name = ui.input('Bucket Name', value='', placeholder='')
+        s3_region = ui.input('AWS Region', value='us-east-1', placeholder='us-east-1')
+        
+        ui.separator().classes('my-2')
+        
+        # AWS Credentials
+        ui.label('AWS Credentials').classes('text-md font-medium mb-1')
+        s3_access_key = ui.input('Access Key ID', value='', placeholder='')
+        s3_secret_key = ui.input('Secret Access Key', value='', placeholder='').props('type=password')
+        
+        ui.separator().classes('my-2')
+        
+        # Advanced options
+        with ui.expansion('Advanced Options', icon='settings').classes('w-full'):
+            ui.label('For S3-compatible services (MinIO, etc.)').classes('text-sm text-gray-500 mb-2')
+            s3_endpoint_url = ui.input('Endpoint URL', value='', placeholder='')
+            
+        # Remember credentials checkbox
+        save_s3_creds = ui.checkbox('Save S3 credentials', value=False)
+        
+        with ui.row().classes('w-full justify-end mt-4'):
+            ui.button('Cancel', on_click=s3_connection_dialog.close)
+            
+            async def connect_s3_action():
+                config = {
+                    'bucket_name': s3_bucket_name.value.strip(),
+                    'region': s3_region.value.strip() or 'us-east-1',
+                    'access_key_id': s3_access_key.value.strip(),
+                    'secret_access_key': s3_secret_key.value.strip(),
+                    'endpoint_url': s3_endpoint_url.value.strip() or None
+                }
+                
+                # Validate required fields
+                required_fields = ['bucket_name', 'access_key_id', 'secret_access_key']
+                if any(not config[f] for f in required_fields):
+                    ui.notify('Please fill all required fields', type='warning')
+                    return
+                
+                # Show loading
+                ui.notify('Connecting to S3...', type='info')
+                
+                # Connect to S3
+                success, message = await notebook.connect_to_s3(config)
+                
+                if success:
+                    ui.notify(message, type='positive')
+                    
+                    # Update UI
+                    s3_status_indicator.content = '<div class="status-indicator status-connected"></div>'
+                    s3_status_label.text = 'Connected'
+                    s3_bucket_display.text = f"Bucket: {config['bucket_name']}"
+                    
+                    # Save credentials if requested
+                    if save_s3_creds.value:
+                        # You can extend your existing save_credentials method to handle S3
+                        # or create a separate method
+                        s3_creds_file = notebook.app_config_dir / 's3_credentials.json'
+                        try:
+                            with open(s3_creds_file, 'w') as f:
+                                json.dump(config, f, indent=2)
+                            ui.notify("S3 credentials saved", type='info')
+                        except Exception as e:
+                            logger.error(f"Failed to save S3 credentials: {e}")
+                    
+                    # Refresh S3 tree
+                    await refresh_s3_tree()
+                    
+                    s3_connection_dialog.close()
+                else:
+                    ui.notify(f'S3 connection failed: {message}', type='negative')
+                    s3_status_indicator.content = '<div class="status-indicator status-disconnected"></div>'
+                    s3_status_label.text = 'Not connected'
+            
+            ui.button('Connect', on_click=connect_s3_action).classes('bg-blue-500')
+
+# Function to load saved S3 credentials on startup
+def load_s3_credentials():
+    """Load saved S3 credentials if they exist"""
+    try:
+        s3_creds_file = notebook.app_config_dir / 's3_credentials.json'
+        if s3_creds_file.exists():
+            with open(s3_creds_file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load S3 credentials: {e}")
+    return {}
+
+
 async def initialize_app():
     await add_cell('sql')
     if notebook.cells and hasattr(notebook.cells[0]['code'], 'theme'):
@@ -2586,6 +2916,17 @@ async def initialize_app():
     await setup_keyboard_shortcuts()
     
     ui.timer(0.5, refresh_trees_ui, once=False)
+
+    # Auto-connect to S3 if credentials are saved
+    saved_s3_creds = load_s3_credentials()
+    if saved_s3_creds and all(saved_s3_creds.get(f) for f in ['bucket_name', 'access_key_id', 'secret_access_key']):
+        ui.notify("Attempting to connect to saved S3 bucket...", type='info')
+        success, message = await notebook.connect_to_s3(saved_s3_creds)
+        if success:
+            s3_status_indicator.content = '<div class="status-indicator status-connected"></div>'
+            s3_status_label.text = 'Connected'
+            s3_bucket_display.text = f"Bucket: {saved_s3_creds['bucket_name']}"
+            await refresh_s3_tree()
 
 ui.timer(0.1, initialize_app, once=True) 
 

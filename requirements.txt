@@ -5,3 +5,4 @@ sshtunnel
 numpy
 matplotlib
 pyinstaller
+boto3
