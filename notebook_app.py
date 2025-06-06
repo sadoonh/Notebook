@@ -1,7 +1,7 @@
 import asyncio
 from nicegui import ui, app
 import json
-import psycopg2
+import asyncpg
 import pandas as pd
 from sshtunnel import SSHTunnelForwarder
 import traceback
@@ -1158,38 +1158,40 @@ def get_file_icon(file_extension):
 async def get_database_schema():
     """
     Retrieves all table names along with their respective column names and data types
-    from the connected database.
+    from the connected database using asyncpg.
     """
     if not notebook.db_connection:
         return {"error": "Not connected to database"}
     
     schema_data = {}
     try:
-        cur = notebook.db_connection.cursor()
-        
         # Get all tables
-        cur.execute("""
+        tables_query = """
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
             ORDER BY table_name;
-        """)
-        tables = [row[0] for row in cur.fetchall()]
+        """
+        table_records = await notebook.db_connection.fetch(tables_query)
+        tables = [record['table_name'] for record in table_records]
         
         # Get columns for each table
         for table_name in tables:
             schema_data[table_name] = []
-            cur.execute("""
+            columns_query = """
                 SELECT column_name, data_type
                 FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = %s
+                WHERE table_schema = 'public' AND table_name = $1
                 ORDER BY ordinal_position;
-            """, (table_name,))
+            """
             
-            columns_with_types = cur.fetchall()
+            column_records = await notebook.db_connection.fetch(columns_query, table_name)
             
             processed_columns = []
-            for col_name, col_type in columns_with_types:
+            for record in column_records:
+                col_name = record['column_name']
+                col_type = record['data_type']
+                
                 # Simplify data types for display
                 if col_type == 'character varying':
                     col_type = 'varchar'
@@ -1199,7 +1201,6 @@ async def get_database_schema():
             
             schema_data[table_name] = processed_columns
         
-        cur.close()
         return schema_data
         
     except Exception as e:
@@ -1297,7 +1298,7 @@ class NotebookApp:
         self.connection_config = config
         if self.db_connection:
             try:
-                await asyncio.to_thread(self.db_connection.close)
+                await self.db_connection.close()  # asyncpg close is async
             except Exception:
                 pass
             finally:
@@ -1324,8 +1325,8 @@ class NotebookApp:
                 await asyncio.to_thread(self.ssh_tunnel.start)
                 
                 logger.info("Connecting to database through SSH tunnel...")
-                self.db_connection = await asyncio.to_thread(
-                    psycopg2.connect,
+                # asyncpg connection - note the different parameter names
+                self.db_connection = await asyncpg.connect(
                     host=self.ssh_tunnel.local_bind_host,
                     port=self.ssh_tunnel.local_bind_port,
                     database=config['db_name'],
@@ -1334,8 +1335,8 @@ class NotebookApp:
                 logger.info("Database connection established via SSH tunnel")
             else:
                 logger.info("No SSH configuration provided. Connecting directly to database...")
-                self.db_connection = await asyncio.to_thread(
-                    psycopg2.connect,
+                # asyncpg connection
+                self.db_connection = await asyncpg.connect(
                     host=config['db_host'],
                     port=int(config['db_port']),
                     database=config['db_name'],
@@ -1356,7 +1357,7 @@ class NotebookApp:
             self.ssh_tunnel = None
             if self.db_connection:
                 try:
-                    await asyncio.to_thread(self.db_connection.close)
+                    await self.db_connection.close()  # asyncpg close is async
                 except Exception:
                     pass
                 self.db_connection = None
@@ -1366,7 +1367,20 @@ class NotebookApp:
         if not self.db_connection:
             return None, "Not connected to database", None
         try:
-            df = await asyncio.to_thread(pd.read_sql_query, query, self.db_connection)
+            # asyncpg requires different approach - fetch records then convert to DataFrame
+            records = await self.db_connection.fetch(query)
+            
+            if records:
+                # Convert asyncpg records to DataFrame
+                # Get column names from the first record
+                columns = list(records[0].keys())
+                # Convert records to list of tuples
+                data = [tuple(record.values()) for record in records]
+                df = pd.DataFrame(data, columns=columns)
+            else:
+                # Handle empty result set
+                df = pd.DataFrame()
+            
             if save_to_df:
                 self.dataframes[save_to_df] = df
                 self.python_globals[save_to_df] = df
