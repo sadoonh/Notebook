@@ -37,9 +37,241 @@ logger = logging.getLogger(__name__)
 if not TKINTER_AVAILABLE:
     logger.warning("tkinter module not found. Native directory picker will be disabled.")
 
+
+
+class VirtualizedSchemaTree:
+    """
+    Enhanced schema tree with lazy loading and virtual scrolling capabilities
+    """
+    
+    def __init__(self, container, page_size=50):
+        self.container = container
+        self.page_size = page_size
+        self.schema_cache = {}
+        self.table_cache = {}
+        self.column_cache = {}
+        self.expanded_nodes = set()
+        self.visible_items = []
+        self.scroll_position = 0
+        self.item_height = 32  # Height of each tree item in pixels
+        
+    async def load_schemas_lazy(self, db_connection) -> List[Dict]:
+        """Load only schema names initially"""
+        if 'schemas' in self.schema_cache:
+            return self.schema_cache['schemas']
+            
+        try:
+            rows = await db_connection.fetch("""
+                SELECT DISTINCT table_schema, COUNT(*) as table_count
+                FROM information_schema.tables
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+                GROUP BY table_schema
+                ORDER BY table_schema
+            """)
+            
+            schemas = []
+            for row in rows:
+                schema_node = {
+                    'id': f'schema_{row["table_schema"]}',
+                    'label': f'{row["table_schema"]} ({row["table_count"]} tables)',
+                    'type': 'schema',
+                    'schema_name': row['table_schema'],
+                    'table_count': row['table_count'],
+                    'icon': 'folder',
+                    'children': [],  # Will be loaded on demand
+                    'loaded': False
+                }
+                schemas.append(schema_node)
+            
+            self.schema_cache['schemas'] = schemas
+            return schemas
+            
+        except Exception as e:
+            logger.error(f"Error loading schemas: {e}")
+            return []
+    
+    async def load_tables_for_schema(self, db_connection, schema_name: str) -> List[Dict]:
+        """Load tables for a specific schema with pagination"""
+        cache_key = f'tables_{schema_name}'
+        
+        if cache_key in self.table_cache:
+            return self.table_cache[cache_key]
+        
+        try:
+            rows = await db_connection.fetch("""
+                SELECT table_name, 
+                       (SELECT COUNT(*) FROM information_schema.columns 
+                        WHERE table_schema = $1 AND table_name = t.table_name) as column_count
+                FROM information_schema.tables t
+                WHERE table_schema = $1
+                ORDER BY table_name
+            """, schema_name)
+            
+            tables = []
+            for row in rows:
+                table_node = {
+                    'id': f'table_{schema_name}_{row["table_name"]}',
+                    'label': f'{row["table_name"]} ({row["column_count"]} cols)',
+                    'type': 'table',
+                    'schema_name': schema_name,
+                    'table_name': row['table_name'],
+                    'column_count': row['column_count'],
+                    'icon': 'backup_table',
+                    'children': [],
+                    'loaded': False
+                }
+                tables.append(table_node)
+            
+            self.table_cache[cache_key] = tables
+            return tables
+            
+        except Exception as e:
+            logger.error(f"Error loading tables for schema {schema_name}: {e}")
+            return []
+    
+    async def load_columns_for_table(self, db_connection, schema_name: str, table_name: str) -> List[Dict]:
+        """Load columns for a specific table"""
+        cache_key = f'columns_{schema_name}_{table_name}'
+        
+        if cache_key in self.column_cache:
+            return self.column_cache[cache_key]
+        
+        try:
+            rows = await db_connection.fetch("""
+                SELECT column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2
+                ORDER BY ordinal_position
+            """, schema_name, table_name)
+            
+            # Find max column name length for alignment
+            max_col_length = max((len(row['column_name']) for row in rows), default=10) + 2
+            
+            columns = []
+            for row in rows:
+                # Simplify data types
+                data_type = row['data_type']
+                if data_type == 'character varying':
+                    data_type = 'varchar'
+                elif 'timestamp' in data_type:
+                    data_type = 'timestamp'
+                
+                column_node = {
+                    'id': f'col_{schema_name}_{table_name}_{row["column_name"]}',
+                    'label': row['column_name'],
+                    'type': 'column',
+                    'data_type': data_type,
+                    'is_nullable': row['is_nullable'] == 'YES',
+                    'has_default': row['column_default'] is not None,
+                    'max_width': max_col_length,
+                    'selectable': False
+                }
+                columns.append(column_node)
+            
+            self.column_cache[cache_key] = columns
+            return columns
+            
+        except Exception as e:
+            logger.error(f"Error loading columns for {schema_name}.{table_name}: {e}")
+            return []
+    
+    def create_virtual_tree_html(self, items: List[Dict], start_index: int = 0, visible_count: int = 20) -> str:
+        """Create HTML for virtual scrolling tree"""
+        total_height = len(items) * self.item_height
+        visible_items = items[start_index:start_index + visible_count]
+        
+        html_parts = [
+            f'<div class="virtual-tree-container" style="height: 400px; overflow-y: auto;" data-total-items="{len(items)}">',
+            f'<div class="virtual-spacer-top" style="height: {start_index * self.item_height}px;"></div>',
+            '<div class="virtual-content">'
+        ]
+        
+        for i, item in enumerate(visible_items):
+            actual_index = start_index + i
+            indent_level = item.get('level', 0)
+            indent = indent_level * 20
+            
+            if item['type'] == 'schema':
+                icon = '📁' if item['id'] not in self.expanded_nodes else '📂'
+                html_parts.append(f'''
+                    <div class="tree-item schema-item" data-id="{item['id']}" data-index="{actual_index}" 
+                         style="height: {self.item_height}px; padding-left: {indent}px; display: flex; align-items: center; cursor: pointer;">
+                        <span class="expand-icon" style="margin-right: 8px;">{icon}</span>
+                        <span class="item-label">{item['label']}</span>
+                    </div>
+                ''')
+            elif item['type'] == 'table':
+                icon = '🗃️'
+                html_parts.append(f'''
+                    <div class="tree-item table-item" data-id="{item['id']}" data-index="{actual_index}"
+                         style="height: {self.item_height}px; padding-left: {indent}px; display: flex; align-items: center; cursor: pointer;">
+                        <span class="expand-icon" style="margin-right: 8px;">{icon}</span>
+                        <span class="item-label">{item['label']}</span>
+                    </div>
+                ''')
+            elif item['type'] == 'column':
+                nullable_indicator = '🔸' if item['is_nullable'] else '🔹'
+                default_indicator = '⚙️' if item['has_default'] else ''
+                html_parts.append(f'''
+                    <div class="tree-item column-item" data-id="{item['id']}" data-index="{actual_index}"
+                         style="height: {self.item_height}px; padding-left: {indent}px; display: flex; align-items: center; font-family: monospace; font-size: 0.9em;">
+                        <span style="display: inline-block; width: {item['max_width']}ch; color: var(--text-primary);">{item['label']}</span>
+                        <span style="color: #9e9e9e; margin-left: 8px;">{item['data_type']}</span>
+                        <span style="margin-left: 8px;">{nullable_indicator}{default_indicator}</span>
+                    </div>
+                ''')
+        
+        bottom_spacer_height = max(0, total_height - (start_index + len(visible_items)) * self.item_height)
+        html_parts.extend([
+            '</div>',
+            f'<div class="virtual-spacer-bottom" style="height: {bottom_spacer_height}px;"></div>',
+            '</div>'
+        ])
+        
+        return ''.join(html_parts)
+    
+    async def expand_node(self, db_connection, node_id: str, node_data: Dict):
+        """Expand a node and load its children"""
+        if node_id in self.expanded_nodes:
+            self.expanded_nodes.remove(node_id)
+            return
+        
+        self.expanded_nodes.add(node_id)
+        
+        if node_data['type'] == 'schema' and not node_data['loaded']:
+            tables = await self.load_tables_for_schema(db_connection, node_data['schema_name'])
+            node_data['children'] = tables
+            node_data['loaded'] = True
+            
+        elif node_data['type'] == 'table' and not node_data['loaded']:
+            columns = await self.load_columns_for_table(
+                db_connection, 
+                node_data['schema_name'], 
+                node_data['table_name']
+            )
+            node_data['children'] = columns
+            node_data['loaded'] = True
+    
+    def flatten_tree_for_virtual_scroll(self, nodes: List[Dict], level: int = 0) -> List[Dict]:
+        """Flatten tree structure for virtual scrolling"""
+        flattened = []
+        
+        for node in nodes:
+            node_copy = node.copy()
+            node_copy['level'] = level
+            flattened.append(node_copy)
+            
+            # Add children if node is expanded
+            if node['id'] in self.expanded_nodes and node.get('children'):
+                child_items = self.flatten_tree_for_virtual_scroll(node['children'], level + 1)
+                flattened.extend(child_items)
+        
+        return flattened
+
 # Custom CSS
 custom_css = """
 <style>
+
 * {
     margin: 0;
     padding: 0;
@@ -1952,7 +2184,7 @@ async def refresh_trees_ui():
                     ui.label("Directory is empty or inaccessible.").classes('q-pa-md text-caption text-[var(--text-secondary)]')
 
 async def refresh_schema_tree_ui():
-    """Refresh the database schema tree with optimized loading."""
+    """Refresh the database schema tree with virtual scrolling for large datasets."""
     global schema_tree, schema_container, db_schema_data
     
     if not schema_container:
@@ -1989,58 +2221,211 @@ async def refresh_schema_tree_ui():
             # Update global schema data
             db_schema_data = new_schema_data
             
-            # Container for the toggle button
-            with ui.row().classes('w-full px-2 pb-1 gap-1'):
-                # Create the single toggle button
-                button_state = {'is_expanded': False} 
-                toggle_button = ui.button('Expand All', icon='unfold_more') \
-                    .props('flat dense color="grey-5" size="sm"') \
-                    .classes('text-xs')
-
-            # Create the tree with optimized settings
-            tree_nodes = build_schema_tree_nodes(new_schema_data)
-            schema_tree = ui.tree(
-                nodes=tree_nodes,
-                node_key='id',
-                label_key='label',
-                children_key='children'
-            ).classes('w-full').style('margin-left: -10px; margin-top: -10px;')
-
-            # Define the toggle button handler
-            def handle_toggle_expand_collapse():
-                if schema_tree:
-                    if not button_state['is_expanded']:
-                        # Expand All
-                        schema_tree.run_method('expandAll')
-                        toggle_button.text = 'Collapse All'
-                        toggle_button.props('icon=unfold_less')
-                    else:
-                        # Collapse All
-                        schema_tree.run_method('collapseAll')
-                        toggle_button.text = 'Expand All'
-                        toggle_button.props('icon=unfold_more')
-                    
-                    button_state['is_expanded'] = not button_state['is_expanded']
-
-            toggle_button.on_click(handle_toggle_expand_collapse)
+            # Calculate total counts for user feedback
+            total_schemas = len(new_schema_data)
+            total_tables = sum(len(tables) for tables in new_schema_data.values())
+            total_columns = sum(
+                len(columns) for tables in new_schema_data.values() 
+                for columns in tables.values()
+            )
             
-            # Add custom slot for rendering labels with aligned types
-            schema_tree.add_slot('default-header', '''
-                <span v-if="props.node.is_column" style="display: flex; align-items: center; font-family: monospace;">
-                    <span :style="`display: inline-block; width: ${props.node.max_width - 3}ch; color: #9e9e9e;`">{{ props.node.label }}</span>
-                    <span style="color: #9e9e9e; margin-left: 2px;">{{ props.node.col_type }}</span>
-                </span>
-                <span v-else style="display: flex; align-items: center;">
-                    <q-icon :name="props.node.icon" color="primary" style="margin-right: 8px;" />
-                    <span>{{ props.node.label }}</span>
-                </span>
-            ''')
+            # Show stats
+            stats_text = f"{total_schemas} schemas, {total_tables} tables, {total_columns} columns"
+            ui.label(stats_text).classes('text-xs text-gray-500 px-2 pb-2')
+            
+            # Check if dataset is large and needs virtual scrolling
+            if total_tables > 50 or total_columns > 1000:
+                await build_virtual_schema_tree(new_schema_data, total_tables, total_columns)
+            else:
+                await build_standard_schema_tree(new_schema_data)
                 
     except Exception as e:
         logger.error(f"Error refreshing schema tree: {e}", exc_info=True)
         schema_container.clear()
         with schema_container:
             ui.label(f"Error loading schema: {str(e)}").classes('text-red-500 p-4')
+
+
+async def build_virtual_schema_tree(schema_data: dict, total_tables: int, total_columns: int):
+    """Build a virtual tree for large datasets with on-demand loading."""
+    global schema_tree, schema_container
+    
+    # Use a more efficient approach for large datasets
+    ui.label(f"⚡ Large dataset detected - using optimized view").classes('text-xs text-orange-500 px-2 pb-2')
+    
+    # Create schema-level navigation only
+    schema_list_container = ui.column().classes('w-full')
+    
+    with schema_list_container:
+        for schema_name, tables in schema_data.items():
+            table_count = len(tables)
+            column_count = sum(len(columns) for columns in tables.values())
+            
+            # Create expandable schema section
+            with ui.expansion(f"📁 {schema_name} ({table_count} tables, {column_count} columns)", 
+                            icon='folder').classes('w-full') as schema_expansion:
+                
+                # Lazy load tables when schema is expanded
+                table_container = ui.column().classes('w-full')
+                tables_loaded = {'loaded': False}  # Mutable reference for closure
+                
+                async def load_tables_for_schema(schema_name=schema_name, tables=tables, 
+                                               container=table_container, loaded_ref=tables_loaded):
+                    if loaded_ref['loaded']:
+                        return
+                    
+                    container.clear()
+                    with container:
+                        # Limit tables shown initially
+                        table_items = list(tables.items())
+                        show_limit = 25  # Show first 25 tables
+                        
+                        for i, (table_name, columns) in enumerate(table_items[:show_limit]):
+                            # Create table expansion
+                            with ui.expansion(f"📋 {table_name} ({len(columns)} columns)", 
+                                            icon='table_view').classes('w-full ml-4') as table_expansion:
+                                
+                                column_container = ui.column().classes('w-full')
+                                columns_loaded = {'loaded': False}
+                                
+                                async def load_columns_for_table(columns=columns, 
+                                                                container=column_container, 
+                                                                loaded_ref=columns_loaded):
+                                    if loaded_ref['loaded']:
+                                        return
+                                    
+                                    container.clear()
+                                    with container:
+                                        # Show columns with proper formatting
+                                        if columns:
+                                            max_col_length = max(len(col[0]) for col in columns) + 2
+                                            
+                                            # Group columns to prevent overwhelming the browser
+                                            column_groups = [columns[i:i+20] for i in range(0, len(columns), 20)]
+                                            
+                                            for group_idx, column_group in enumerate(column_groups):
+                                                if group_idx > 0:
+                                                    ui.separator().classes('my-2')
+                                                    ui.label(f"Columns {group_idx * 20 + 1}-{min((group_idx + 1) * 20, len(columns))}:").classes('text-xs text-gray-500 ml-8')
+                                                
+                                                for col_name, col_type in column_group:
+                                                    # Create column display with proper spacing
+                                                    with ui.row().classes('ml-8 text-xs items-center gap-2'):
+                                                        ui.label('🔸').classes('text-blue-500')
+                                                        ui.label(f'{col_name:.<{max_col_length}}').classes('font-mono text-gray-700 dark:text-gray-300')
+                                                        ui.label(col_type).classes('text-gray-500 font-mono')
+                                    
+                                    loaded_ref['loaded'] = True
+                                
+                                # Load columns when table is expanded
+                                table_expansion.on_value_change(
+                                    lambda e, load_fn=load_columns_for_table: 
+                                    asyncio.create_task(load_fn()) if e.value else None
+                                )
+                        
+                        # Show "load more" button if there are more tables
+                        if len(table_items) > show_limit:
+                            remaining = len(table_items) - show_limit
+                            
+                            async def load_more_tables():
+                                # Load remaining tables in batches
+                                batch_size = 25
+                                for batch_start in range(show_limit, len(table_items), batch_size):
+                                    batch_end = min(batch_start + batch_size, len(table_items))
+                                    batch_tables = table_items[batch_start:batch_end]
+                                    
+                                    for table_name, columns in batch_tables:
+                                        with ui.expansion(f"📋 {table_name} ({len(columns)} columns)", 
+                                                        icon='table_view').classes('w-full ml-4') as table_exp:
+                                            
+                                            # Lazy load columns for each table
+                                            col_container = ui.column().classes('w-full')
+                                            col_loaded = {'loaded': False}
+                                            
+                                            async def load_batch_columns(cols=columns, container=col_container, loaded_ref=col_loaded):
+                                                if loaded_ref['loaded']:
+                                                    return
+                                                
+                                                container.clear()
+                                                with container:
+                                                    if cols:
+                                                        max_col_len = max(len(col[0]) for col in cols) + 2
+                                                        for col_name, col_type in cols:
+                                                            with ui.row().classes('ml-8 text-xs items-center gap-2'):
+                                                                ui.label('🔸').classes('text-blue-500')
+                                                                ui.label(f'{col_name:.<{max_col_len}}').classes('font-mono text-gray-700 dark:text-gray-300')
+                                                                ui.label(col_type).classes('text-gray-500 font-mono')
+                                                
+                                                loaded_ref['loaded'] = True
+                                            
+                                            table_exp.on_value_change(
+                                                lambda e, load_fn=load_batch_columns: 
+                                                asyncio.create_task(load_fn()) if e.value else None
+                                            )
+                                
+                                load_more_btn.delete()  # Remove the button after loading
+                                ui.notify(f"Loaded {remaining} more tables", type='positive')
+                            
+                            load_more_btn = ui.button(f"📥 Load {remaining} more tables...", 
+                                                     on_click=load_more_tables) \
+                                .classes('ml-4 text-xs').props('flat dense color=primary')
+                    
+                    loaded_ref['loaded'] = True
+                
+                # Load tables when schema is expanded
+                schema_expansion.on_value_change(
+                    lambda e, load_fn=load_tables_for_schema: 
+                    asyncio.create_task(load_fn()) if e.value else None
+                )
+
+async def build_standard_schema_tree(schema_data: dict):
+    """Build standard tree for smaller datasets."""
+    global schema_tree
+    
+    # Use the original tree approach for smaller datasets
+    tree_nodes = build_schema_tree_nodes(schema_data)
+    
+    # Add expand/collapse controls
+    with ui.row().classes('w-full px-2 pb-1 gap-1'):
+        button_state = {'is_expanded': False} 
+        toggle_button = ui.button('Expand All', icon='unfold_more') \
+            .props('flat dense color="grey-5" size="sm"') \
+            .classes('text-xs')
+    
+    schema_tree = ui.tree(
+        nodes=tree_nodes,
+        node_key='id',
+        label_key='label',
+        children_key='children'
+    ).classes('w-full').style('margin-left: -10px; margin-top: -10px;')
+    
+    # Toggle button handler
+    def handle_toggle_expand_collapse():
+        if schema_tree:
+            if not button_state['is_expanded']:
+                schema_tree.run_method('expandAll')
+                toggle_button.text = 'Collapse All'
+                toggle_button.props('icon=unfold_less')
+            else:
+                schema_tree.run_method('collapseAll')
+                toggle_button.text = 'Expand All'
+                toggle_button.props('icon=unfold_more')
+            
+            button_state['is_expanded'] = not button_state['is_expanded']
+
+    toggle_button.on_click(handle_toggle_expand_collapse)
+    
+    # Add custom slot for rendering
+    schema_tree.add_slot('default-header', '''
+        <span v-if="props.node.is_column" style="display: flex; align-items: center; font-family: monospace;">
+            <span :style="`display: inline-block; width: ${props.node.max_width - 3}ch; color: #9e9e9e;`">{{ props.node.label }}</span>
+            <span style="color: #9e9e9e; margin-left: 2px;">{{ props.node.col_type }}</span>
+        </span>
+        <span v-else style="display: flex; align-items: center;">
+            <q-icon :name="props.node.icon" color="primary" style="margin-right: 8px;" />
+            <span>{{ props.node.label }}</span>
+        </span>
+    ''')
 
 
 async def pick_directory_native() -> Optional[str]:
