@@ -155,6 +155,8 @@ if (!window.DbExplorer) {
                 console.error(`DbExplorer: Element with ID "${elementId}" not found.`);
                 return;
             }
+            // MODIFIED: Attach instance to the element for external access
+            this.container.dbExplorerInstance = this;
             this.initialData = initialData;
             this.container.addEventListener('click', this.handleTreeClick.bind(this));
             this.init();
@@ -351,6 +353,61 @@ if (!window.DbExplorer) {
         }
         renderError(message) {
             this.container.innerHTML = `<div class="error-message" style="padding: 16px;">${this.escapeHtml(message)}</div>`;
+        }
+        // NEW: Method to filter tables based on a search term
+        filterTables(searchTerm) {
+            const term = searchTerm.toLowerCase().trim();
+            const allSchemaNodes = this.container.querySelectorAll('.tree-node--schema');
+
+            allSchemaNodes.forEach(schemaNode => {
+                // Find tables *only if they are already loaded in the DOM*
+                const tableNodes = schemaNode.querySelectorAll('.tree-node-content > .tree-node--table');
+                let schemaHasVisibleMatch = false;
+
+                // Case 1: Search term is cleared
+                if (!term) {
+                    schemaNode.style.display = ''; // Show schema
+                    if (tableNodes.length > 0) {
+                        tableNodes.forEach(tableNode => {
+                            tableNode.style.display = ''; // Show all its tables
+                        });
+                    }
+                    // Collapse the schema for a clean slate
+                    if (schemaNode.getAttribute('aria-expanded') === 'true') {
+                         this.collapseNode(schemaNode);
+                    }
+                    return; // Go to the next schema node
+                }
+
+                // Case 2: There is a search term
+                if (tableNodes.length > 0) {
+                    let foundMatchInChildren = false;
+                    tableNodes.forEach(tableNode => {
+                        const tableName = tableNode.dataset.table.toLowerCase();
+                        if (tableName.includes(term)) {
+                            tableNode.style.display = ''; // Show matching table
+                            foundMatchInChildren = true;
+                        } else {
+                            tableNode.style.display = 'none'; // Hide non-matching table
+                        }
+                    });
+
+                    if (foundMatchInChildren) {
+                        schemaHasVisibleMatch = true;
+                        // Ensure parent schema is expanded to show the match
+                        if (schemaNode.getAttribute('aria-expanded') !== 'true') {
+                            schemaNode.setAttribute('aria-expanded', 'true');
+                        }
+                    }
+                }
+
+                // Final visibility check for the schema node itself
+                if (schemaHasVisibleMatch) {
+                    schemaNode.style.display = '';
+                } else {
+                    schemaNode.style.display = 'none';
+                }
+            });
         }
     }
 }
@@ -1294,7 +1351,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         // Ctrl+Down Arrow: Add new cell
-        else if (e.ctrlKey && e.key === 'ArrowDown') {
+        else if (e.altKey && e.key === 'ArrowDown') {
             e.preventDefault();
             e.stopPropagation();
 
@@ -1470,7 +1527,7 @@ def create_file_tree(path: Path = Path('.'), max_depth=3, current_depth=0) -> Tu
 
 def get_file_icon(file_extension):
     icons = {
-        '.py': 'code', '.sql': 'storage', '.csv': 'view_list', '.xlsx': 'table_view',
+        '.py': 'code', '.sql': 'storage', '.csv': 'backup_table', '.xlsx': 'table_view',
         '.xls': 'table_view', '.json': 'data_object', '.txt': 'description', '.md': 'article',
         '.html': 'web', '.css': 'palette', '.js': 'javascript', '.pdf': 'picture_as_pdf',
         '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image',
@@ -2365,6 +2422,23 @@ async def load_notebook_from_path(filepath: str):
         else:
             ui.notify("Failed to load notebook", type='negative')
 
+def delete_bottom_most_cell():
+    """Deletes the last cell in the notebook via its stored delete function."""
+    if not notebook.cells:
+        ui.notify("No cells to delete.", type='warning')
+        return
+
+    # Get the data dictionary for the last cell
+    last_cell_data = notebook.cells[-1]
+
+    # Check if the delete function exists and call it
+    if 'delete_func' in last_cell_data and callable(last_cell_data['delete_func']):
+        last_cell_data['delete_func']()
+        # The notification is handled inside the 'delete_cell' closure.
+    else:
+        logger.error("Could not delete the last cell: 'delete_func' not found in cell data.")
+        ui.notify("An error occurred while trying to delete the cell.", type='negative')
+
 async def add_cell(cell_type='sql', initial_show_all_rows=False):
     cell_id = notebook.generate_cell_id()
 
@@ -2375,11 +2449,11 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
         'execution_status': None, 'timer_label': None, 'spinner': None,
         'execution_result': None, 'result_icon': None, 'result_time': None,
         'is_collapsed': lambda: False, 'toggle_collapse': None,
-        # NEW: For output and download button
         'output_container': None,
         'output_area_markdown': None,
-        'download_button_row': None, # Keep this reference
-        'df_to_download': None
+        'download_button_row': None,
+        'df_to_download': None,
+        'delete_func': None,  # Placeholder for the delete function
     }
 
     with cell_container:
@@ -2573,6 +2647,18 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
             notebook.mark_modified()
         df_name_input.on_value_change(on_df_name_change)
 
+    # Define the delete function for this specific cell
+    def delete_cell():
+        notebook.cells.remove(cell_data_dict)
+        cell_element.delete()
+        notebook.mark_modified()
+        
+    # Assign the delete function to the button
+    delete_btn.on_click(delete_cell)
+    
+    # Store the delete function in the cell's data dictionary for external access
+    cell_data_dict['delete_func'] = delete_cell
+
     cell_data_dict.update({
         'type': cell_type_select,
         'code': code_editor,
@@ -2586,17 +2672,11 @@ async def add_cell(cell_type='sql', initial_show_all_rows=False):
         'result_time': result_time,
         'output_container': output_container_el,
         'output_area_markdown': output_area_markdown_el,
-        'download_button_row': download_button_row_el, # Ensure this is captured in the dict
+        'download_button_row': download_button_row_el,
     })
     notebook.cells.append(cell_data_dict)
-
-    def delete_cell():
-        notebook.cells.remove(cell_data_dict)
-        cell_element.delete()
-        notebook.mark_modified()
-
+    
     run_btn.on_click(run_cell)
-    delete_btn.on_click(delete_cell)
     save_cell_btn.on_click(functools.partial(save_cell_code, cell_data_dict))
 
     if hasattr(cell_container, '_add_cell_button'):
@@ -2610,17 +2690,26 @@ async def setup_keyboard_shortcuts():
     ui.keyboard(on_key=handle_keyboard_shortcut)
 
 def handle_keyboard_shortcut(event):
+    """Handles global keyboard shortcuts for the application."""
     if event.action.keydown:
         if event.modifiers.alt:
+            # File/Notebook shortcuts
             if event.key.name == 's':
                 asyncio.create_task(handle_save_notebook())
             elif event.key.name == 'o':
                 asyncio.create_task(handle_load_notebook())
             elif event.key.name == 'n':
                 asyncio.create_task(handle_new_notebook())
-        elif event.modifiers.ctrl and event.key.name == 'b':
-            if left_drawer_instance:
-                left_drawer_instance.toggle()
+            # Drawer shortcuts
+            elif event.key.name == 'ArrowLeft':
+                if left_drawer_instance:
+                    left_drawer_instance.toggle()
+            elif event.key.name == 'ArrowRight':
+                if right_drawer_instance:
+                    right_drawer_instance.toggle()
+            # Cell shortcuts
+            elif event.key.name == 'ArrowUp':
+                delete_bottom_most_cell()
 
 def toggle_dark_mode():
     notebook.is_dark_mode = not notebook.is_dark_mode
@@ -2650,7 +2739,7 @@ ui.query('body').classes(add='dark-mode')
 with main_container:
     with ui.column().classes('w-full h-full'):
         with ui.row().classes('toolbar w-full'):
-            ui.button(on_click=lambda: left_drawer_instance.toggle(), icon='menu').props('flat round color=primary').classes('drawer-button-hover-effect').style('margin-left: -6px;')
+            ui.button(on_click=lambda: left_drawer_instance.toggle(), icon='menu').props('flat round color=primary').classes('drawer-button-hover-effect').style('margin-left: -6px;').tooltip('Toggle File/Schema Browser (Alt+Left Arrow)')
 
             title_label = ui.label('Untitled').classes('text-2xl font-bold')
             notebook.title_label = title_label
@@ -2693,11 +2782,11 @@ with main_container:
 
             ui.button(icon='auto_awesome', on_click=lambda: right_drawer_instance.toggle()) \
                 .props('flat round color=orange').classes('drawer-button-hover-effect') \
-                .tooltip('Toggle AI Assistant')
+                .tooltip('Toggle AI Assistant (Alt+Right Arrow)')
 
         cell_container = ui.column().classes('w-full cell-container')
         with cell_container:
-            cell_container._add_cell_button = ui.button('+ Add Cell', on_click=lambda: asyncio.create_task(add_cell_and_mark_modified('sql'))).classes('add-cell-button').props('id=add-cell-button')
+            cell_container._add_cell_button = ui.button('+ Add Cell', on_click=lambda: asyncio.create_task(add_cell_and_mark_modified('sql'))).classes('add-cell-button').props('id=add-cell-button').tooltip('Add new cell below (Alt+Down Arrow)')
 
 with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True) \
         .props('width=240 behavior=desktop') \
@@ -2754,7 +2843,35 @@ with ui.left_drawer(value=False, elevated=False, top_corner=False, bordered=True
 
             # Schema Tab Panel
             with ui.tab_panel('schema').classes('-mt-4'):
-                with ui.row().classes('ml-3 gap-2'):  # Added gap-2 for spacing between buttons
+                # NEW: Search bar for tables
+                with ui.row().classes('w-full items-center px-2 pt-1 pb-2'):
+                    # CORRECTED: Removed the incorrect type hint 'ui.events.GenericEventArguments'
+                    def handle_schema_search(e):
+                        # The logic here remains correct: the value is in e.args
+                        search_term = e.args or ''
+                        # Escape characters for safe insertion into JS string
+                        js_term = search_term.replace('\\', '\\\\').replace("'", "\\'")
+                        ui.run_javascript(f"""
+                            const explorerDiv = document.getElementById('db-explorer-container');
+                            if (explorerDiv && explorerDiv.dbExplorerInstance) {{
+                                explorerDiv.dbExplorerInstance.filterTables('{js_term}');
+                            }}
+                        """)
+
+                    schema_search_input = ui.input(placeholder='Search loaded tables...') \
+                        .props('dense clearable input-class="pl-2"') \
+                        .classes('w-full') \
+                        .style('font-size: 0.8rem; background-color: var(--bg-tertiary); border-radius: 4px;')
+
+                    schema_search_input.on('update:model-value', handle_schema_search, throttle=0.3)
+
+                    def clear_and_reset_search():
+                        # This simplified logic is correct.
+                        schema_search_input.set_value(None)
+
+                    schema_search_input.on('keydown.escape', clear_and_reset_search, [])
+
+                with ui.row().classes('ml-3 gap-2 -mt-3'):  # Added gap-2 for spacing between buttons
                     # Move the reconnect button here
                     async def handle_reconnect():
                         if not notebook.last_successful_config:
@@ -2814,6 +2931,26 @@ with ui.right_drawer(value=False, elevated=False, top_corner=False, bordered=Tru
             f'<iframe src="https://aistudio.google.com/prompts/new_chat" '
             f'style="width: 100%; height: 100%; border: none; display: block;"></iframe>'
         ).classes('w-full h-full')
+
+# --- START: New Dynamic Drawer Width Logic ---
+async def update_drawer_widths(_):
+    """Dynamically adjusts drawer widths based on which drawers are open."""
+    if not left_drawer_instance or not right_drawer_instance:
+        return
+
+    is_left_open = left_drawer_instance.value
+    is_right_open = right_drawer_instance.value
+
+    new_left_width = 310 if not is_right_open else 240
+    left_drawer_instance.props(f'width={new_left_width}')
+
+    new_right_width = 580 if not is_left_open else 450
+    right_drawer_instance.props(f'width={new_right_width}')
+
+# Attach the same handler to both drawers.
+left_drawer_instance.on_value_change(update_drawer_widths)
+right_drawer_instance.on_value_change(update_drawer_widths)
+# --- END: New Dynamic Drawer Width Logic ---
 
 
 with ui.dialog() as connection_dialog:
